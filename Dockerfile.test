@@ -1,0 +1,47 @@
+# Dockerfile for running media package tests on Linux
+FROM golang:1.24-bookworm
+
+# Install build dependencies for libvpx, libopus, V4L2, and ALSA
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    pkg-config \
+    libasound2-dev \
+    linux-libc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Allow automatic toolchain download for Go 1.25+
+ENV GOTOOLCHAIN=auto
+
+# Copy the source
+COPY . .
+
+# Build the C libraries from source (reproducible build)
+WORKDIR /app/clib
+RUN make deps && make vpx opus v4l2 alsa
+
+# Install opus to system paths for CGO tests (reproducible)
+# Copy headers, library, and create pkg-config file
+# Note: Cflags points to opus subdir so #include <opus.h> works (matches Homebrew pattern)
+RUN mkdir -p /usr/local/include/opus /usr/local/lib/pkgconfig && \
+    cp .deps/opus-*/include/*.h /usr/local/include/opus/ && \
+    cp .deps/opus-*/.libs/libopus.a /usr/local/lib/ && \
+    OPUS_VERSION=$(ls -d .deps/opus-* | sed 's/.*opus-//') && \
+    echo "prefix=/usr/local" > /usr/local/lib/pkgconfig/opus.pc && \
+    echo "exec_prefix=\${prefix}" >> /usr/local/lib/pkgconfig/opus.pc && \
+    echo "libdir=\${exec_prefix}/lib" >> /usr/local/lib/pkgconfig/opus.pc && \
+    echo "includedir=\${prefix}/include/opus" >> /usr/local/lib/pkgconfig/opus.pc && \
+    echo "" >> /usr/local/lib/pkgconfig/opus.pc && \
+    echo "Name: Opus" >> /usr/local/lib/pkgconfig/opus.pc && \
+    echo "Description: Opus codec library" >> /usr/local/lib/pkgconfig/opus.pc && \
+    echo "Version: $OPUS_VERSION" >> /usr/local/lib/pkgconfig/opus.pc && \
+    echo "Libs: -L\${libdir} -lopus -lm" >> /usr/local/lib/pkgconfig/opus.pc && \
+    echo "Cflags: -I\${includedir}" >> /usr/local/lib/pkgconfig/opus.pc
+
+# Run all tests
+WORKDIR /app
+ENV STREAM_SDK_LIB_PATH=/app/build
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+CMD ["go", "test", "-v", "./..."]

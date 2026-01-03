@@ -28,5 +28,51 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+.goland-state.json
+
+# Build output
+build/
+*.ivf
+*.yuv
+*.h264
+*.h265
+*.av1
+*.obu
+
+# C library build dependencies (downloaded from source)
+clib/.deps/
+
+# Local deps directory
+deps/
+
+# Compiled object files
+*.o
+*.a
+
+# Profiling and benchmarks
+*.prof
+*.pprof
+cpu.out
+mem.out
+*.bench
+
+# Example binaries (in examples/ dir and if built at root)
+examples/*/main
+examples/*/*.exe
+examples/webrtc-pattern/webrtc-pattern
+examples/pip-compositor/pip-compositor
+webrtc-pattern
+pip-compositor
+
+# macOS
+.DS_Store
+
+# Linux core dumps
+core
+
+# Temporary files
+*.tmp
+*.swp
+*~

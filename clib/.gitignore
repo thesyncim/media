@@ -1,0 +1,10 @@
+# Build dependencies (downloaded and built from source)
+.deps/
+
+# Object files
+*.o
+*.a
+
+# Build artifacts that might be created locally
+*.dylib
+*.so

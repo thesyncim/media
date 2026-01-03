@@ -1,0 +1,754 @@
+//go:build (darwin || linux) && !noav1 && !cgo
+
+// Package media provides AV1 codec support via libstream_av1 using purego.
+
+package media
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
+)
+
+var (
+	streamAV1Once    sync.Once
+	streamAV1Handle  uintptr
+	streamAV1InitErr error
+	streamAV1Loaded  bool
+)
+
+// libstream_av1 function pointers
+var (
+	streamAV1EncoderCreate        func(width, height, fps, bitrateKbps, usage, threads int32) uint64
+	streamAV1EncoderCreateSVC     func(width, height, fps, bitrateKbps, usage, threads, temporalLayers, spatialLayers int32) uint64
+	streamAV1EncoderEncode        func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts uintptr) int32
+	streamAV1EncoderEncodeSVC     func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts, outTemporalLayer, outSpatialLayer uintptr) int32
+	streamAV1EncoderMaxOutputSize func(encoder uint64) int32
+	streamAV1EncoderRequestKF     func(encoder uint64)
+	streamAV1EncoderSetBitrate    func(encoder uint64, bitrateKbps int32) int32
+	streamAV1EncoderSetTemporal   func(encoder uint64, layers int32) int32
+	streamAV1EncoderSetSpatial    func(encoder uint64, layers int32) int32
+	streamAV1EncoderGetSVCConfig  func(encoder uint64, temporalLayers, spatialLayers, svcEnabled uintptr)
+	streamAV1EncoderGetStats      func(encoder uint64, framesEncoded, keyframesEncoded, bytesEncoded uintptr)
+	streamAV1EncoderDestroy       func(encoder uint64)
+
+	streamAV1DecoderCreate        func(threads int32) uint64
+	streamAV1DecoderDecode        func(decoder uint64, data uintptr, dataLen int32, outY, outU, outV, outYStride, outUVStride, outWidth, outHeight uintptr) int32
+	streamAV1DecoderGetDimensions func(decoder uint64, width, height uintptr)
+	streamAV1DecoderGetStats      func(decoder uint64, framesDecoded, keyframesDecoded, bytesDecoded, corruptedFrames uintptr)
+	streamAV1DecoderReset         func(decoder uint64) int32
+	streamAV1DecoderDestroy       func(decoder uint64)
+
+	streamAV1GetError         func() uintptr
+	streamAV1EncoderAvailable func() int32
+	streamAV1DecoderAvailable func() int32
+)
+
+// Constants from stream_av1.h
+const (
+	streamAV1FrameKey       = 0
+	streamAV1FrameInter     = 1
+	streamAV1FrameIntraOnly = 2
+	streamAV1FrameSwitch    = 3
+
+	streamAV1UsageRealtime    = 1
+	streamAV1UsageGoodQuality = 0
+
+	streamAV1OK           = 0
+	streamAV1Error        = -1
+	streamAV1ErrorNoMem   = -2
+	streamAV1ErrorInvalid = -3
+	streamAV1ErrorCodec   = -4
+)
+
+// AV1Usage defines the encoding usage preset
+type AV1Usage int
+
+const (
+	AV1UsageRealtime    AV1Usage = streamAV1UsageRealtime
+	AV1UsageGoodQuality AV1Usage = streamAV1UsageGoodQuality
+)
+
+func loadStreamAV1() error {
+	streamAV1Once.Do(func() {
+		streamAV1InitErr = loadStreamAV1Lib()
+		if streamAV1InitErr == nil {
+			streamAV1Loaded = true
+		}
+	})
+	return streamAV1InitErr
+}
+
+func loadStreamAV1Lib() error {
+	paths := getStreamAV1LibPaths()
+
+	var lastErr error
+	for _, path := range paths {
+		handle, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+		if err == nil {
+			streamAV1Handle = handle
+			if err := loadStreamAV1Symbols(); err != nil {
+				purego.Dlclose(handle)
+				lastErr = err
+				continue
+			}
+			return nil
+		}
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("failed to load libstream_av1: %w", lastErr)
+	}
+	return errors.New("libstream_av1 not found in any standard location")
+}
+
+func getStreamAV1LibPaths() []string {
+	var paths []string
+
+	libName := "libstream_av1.so"
+	if runtime.GOOS == "darwin" {
+		libName = "libstream_av1.dylib"
+	}
+
+	// Environment variable overrides (highest priority)
+	if envPath := os.Getenv("STREAM_AV1_LIB_PATH"); envPath != "" {
+		paths = append(paths, envPath)
+	}
+	if envPath := os.Getenv("STREAM_SDK_LIB_PATH"); envPath != "" {
+		paths = append(paths, filepath.Join(envPath, libName))
+	}
+
+	// Search relative to executable location
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		paths = append(paths,
+			filepath.Join(exeDir, libName),
+			filepath.Join(exeDir, "..", "lib", libName),
+			filepath.Join(exeDir, "..", "..", "build", libName),
+			filepath.Join(exeDir, "..", "..", "build", "ffi", libName),
+		)
+	}
+
+	// Search relative to working directory (with parent traversal)
+	if wd, err := os.Getwd(); err == nil {
+		paths = append(paths,
+			filepath.Join(wd, "build", libName),
+			filepath.Join(wd, "build", "ffi", libName),
+			filepath.Join(wd, "..", "build", libName),
+			filepath.Join(wd, "..", "build", "ffi", libName),
+			filepath.Join(wd, "..", "..", "build", libName),
+			filepath.Join(wd, "..", "..", "build", "ffi", libName),
+			filepath.Join(wd, "..", "..", "..", "build", libName),
+			filepath.Join(wd, "..", "..", "..", "build", "ffi", libName),
+			filepath.Join(wd, "..", "..", "..", "..", "build", libName),
+			filepath.Join(wd, "..", "..", "..", "..", "build", "ffi", libName),
+		)
+	}
+
+	// Search relative to module root (find go.mod)
+	if moduleRoot := findModuleRoot(); moduleRoot != "" {
+		paths = append(paths,
+			filepath.Join(moduleRoot, "build", libName),
+			filepath.Join(moduleRoot, "build", "ffi", libName),
+		)
+	}
+
+	// Development paths - relative
+	devPaths := []string{
+		"build",
+		"build/ffi",
+		"../../build",
+		"../../build/ffi",
+		"../../../../build",
+		"../../../../build/ffi",
+	}
+	for _, devPath := range devPaths {
+		paths = append(paths, filepath.Join(devPath, libName))
+	}
+
+	// System paths (lowest priority)
+	switch runtime.GOOS {
+	case "darwin":
+		paths = append(paths,
+			"libstream_av1.dylib",
+			"/usr/local/lib/libstream_av1.dylib",
+			"/opt/homebrew/lib/libstream_av1.dylib",
+		)
+	case "linux":
+		paths = append(paths,
+			"libstream_av1.so",
+			"/usr/local/lib/libstream_av1.so",
+			"/usr/lib/libstream_av1.so",
+		)
+	}
+
+	return paths
+}
+
+func loadStreamAV1Symbols() error {
+	purego.RegisterLibFunc(&streamAV1EncoderCreate, streamAV1Handle, "stream_av1_encoder_create")
+	purego.RegisterLibFunc(&streamAV1EncoderCreateSVC, streamAV1Handle, "stream_av1_encoder_create_svc")
+	purego.RegisterLibFunc(&streamAV1EncoderEncode, streamAV1Handle, "stream_av1_encoder_encode")
+	purego.RegisterLibFunc(&streamAV1EncoderEncodeSVC, streamAV1Handle, "stream_av1_encoder_encode_svc")
+	purego.RegisterLibFunc(&streamAV1EncoderMaxOutputSize, streamAV1Handle, "stream_av1_encoder_max_output_size")
+	purego.RegisterLibFunc(&streamAV1EncoderRequestKF, streamAV1Handle, "stream_av1_encoder_request_keyframe")
+	purego.RegisterLibFunc(&streamAV1EncoderSetBitrate, streamAV1Handle, "stream_av1_encoder_set_bitrate")
+	purego.RegisterLibFunc(&streamAV1EncoderSetTemporal, streamAV1Handle, "stream_av1_encoder_set_temporal_layers")
+	purego.RegisterLibFunc(&streamAV1EncoderSetSpatial, streamAV1Handle, "stream_av1_encoder_set_spatial_layers")
+	purego.RegisterLibFunc(&streamAV1EncoderGetSVCConfig, streamAV1Handle, "stream_av1_encoder_get_svc_config")
+	purego.RegisterLibFunc(&streamAV1EncoderGetStats, streamAV1Handle, "stream_av1_encoder_get_stats")
+	purego.RegisterLibFunc(&streamAV1EncoderDestroy, streamAV1Handle, "stream_av1_encoder_destroy")
+
+	purego.RegisterLibFunc(&streamAV1DecoderCreate, streamAV1Handle, "stream_av1_decoder_create")
+	purego.RegisterLibFunc(&streamAV1DecoderDecode, streamAV1Handle, "stream_av1_decoder_decode")
+	purego.RegisterLibFunc(&streamAV1DecoderGetDimensions, streamAV1Handle, "stream_av1_decoder_get_dimensions")
+	purego.RegisterLibFunc(&streamAV1DecoderGetStats, streamAV1Handle, "stream_av1_decoder_get_stats")
+	purego.RegisterLibFunc(&streamAV1DecoderReset, streamAV1Handle, "stream_av1_decoder_reset")
+	purego.RegisterLibFunc(&streamAV1DecoderDestroy, streamAV1Handle, "stream_av1_decoder_destroy")
+
+	purego.RegisterLibFunc(&streamAV1GetError, streamAV1Handle, "stream_av1_get_error")
+	purego.RegisterLibFunc(&streamAV1EncoderAvailable, streamAV1Handle, "stream_av1_encoder_available")
+	purego.RegisterLibFunc(&streamAV1DecoderAvailable, streamAV1Handle, "stream_av1_decoder_available")
+
+	return nil
+}
+
+// IsAV1Available checks if libstream_av1 is available.
+func IsAV1Available() bool {
+	if err := loadStreamAV1(); err != nil {
+		return false
+	}
+	return streamAV1Loaded
+}
+
+// IsAV1EncoderAvailable checks if AV1 encoder is available.
+func IsAV1EncoderAvailable() bool {
+	if !IsAV1Available() {
+		return false
+	}
+	return streamAV1EncoderAvailable() != 0
+}
+
+// IsAV1DecoderAvailable checks if AV1 decoder is available.
+func IsAV1DecoderAvailable() bool {
+	if !IsAV1Available() {
+		return false
+	}
+	return streamAV1DecoderAvailable() != 0
+}
+
+func getAV1Error() string {
+	ptr := streamAV1GetError()
+	if ptr == 0 {
+		return "unknown error"
+	}
+	return goStringFromPtr(ptr)
+}
+
+// AV1Encoder implements VideoEncoder for AV1.
+type AV1Encoder struct {
+	config VideoEncoderConfig
+
+	handle    uint64
+	outputBuf []byte
+	usage     AV1Usage
+
+	stats   EncoderStats
+	statsMu sync.Mutex
+
+	keyframeReq atomic.Bool
+	mu          sync.Mutex
+
+	svcEnabled     bool
+	temporalLayers int
+	spatialLayers  int
+}
+
+// NewAV1Encoder creates a new AV1 encoder.
+func NewAV1Encoder(config VideoEncoderConfig) (*AV1Encoder, error) {
+	if err := loadStreamAV1(); err != nil {
+		return nil, fmt.Errorf("AV1 encoder not available: %w", err)
+	}
+
+	if streamAV1EncoderAvailable() == 0 {
+		return nil, errors.New("AV1 encoder not available (libaom not compiled)")
+	}
+
+	usage := AV1UsageRealtime
+	threads := config.Threads
+	if threads <= 0 {
+		threads = 4
+	}
+
+	bitrateKbps := config.BitrateBps / 1000
+	if bitrateKbps <= 0 {
+		bitrateKbps = 1000
+	}
+
+	fps := config.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+
+	temporalLayers := config.TemporalLayers
+	if temporalLayers <= 0 {
+		temporalLayers = 1
+	}
+	spatialLayers := config.SpatialLayers
+	if spatialLayers <= 0 {
+		spatialLayers = 1
+	}
+
+	var handle uint64
+	svcEnabled := temporalLayers > 1 || spatialLayers > 1
+
+	if svcEnabled {
+		handle = streamAV1EncoderCreateSVC(
+			int32(config.Width),
+			int32(config.Height),
+			int32(fps),
+			int32(bitrateKbps),
+			int32(usage),
+			int32(threads),
+			int32(temporalLayers),
+			int32(spatialLayers),
+		)
+	} else {
+		handle = streamAV1EncoderCreate(
+			int32(config.Width),
+			int32(config.Height),
+			int32(fps),
+			int32(bitrateKbps),
+			int32(usage),
+			int32(threads),
+		)
+	}
+
+	if handle == 0 {
+		return nil, fmt.Errorf("failed to create AV1 encoder: %s", getAV1Error())
+	}
+
+	maxOutput := streamAV1EncoderMaxOutputSize(handle)
+	if maxOutput <= 0 {
+		maxOutput = int32(config.Width * config.Height * 3 / 2)
+	}
+
+	enc := &AV1Encoder{
+		config:         config,
+		handle:         handle,
+		outputBuf:      make([]byte, maxOutput),
+		usage:          usage,
+		svcEnabled:     svcEnabled,
+		temporalLayers: temporalLayers,
+		spatialLayers:  spatialLayers,
+	}
+	enc.keyframeReq.Store(true)
+
+	return enc, nil
+}
+
+// Encode implements VideoEncoder.
+func (e *AV1Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.handle == 0 {
+		return nil, fmt.Errorf("encoder not initialized")
+	}
+
+	forceKeyframe := int32(0)
+	if e.keyframeReq.Swap(false) {
+		forceKeyframe = 1
+	}
+
+	var frameType int32
+	var pts int64
+	var temporalLayer, spatialLayer int32
+	var result int32
+
+	if e.svcEnabled {
+		result = streamAV1EncoderEncodeSVC(
+			e.handle,
+			uintptr(unsafe.Pointer(&frame.Data[0][0])),
+			uintptr(unsafe.Pointer(&frame.Data[1][0])),
+			uintptr(unsafe.Pointer(&frame.Data[2][0])),
+			int32(frame.Stride[0]),
+			int32(frame.Stride[1]),
+			forceKeyframe,
+			uintptr(unsafe.Pointer(&e.outputBuf[0])),
+			int32(len(e.outputBuf)),
+			uintptr(unsafe.Pointer(&frameType)),
+			uintptr(unsafe.Pointer(&pts)),
+			uintptr(unsafe.Pointer(&temporalLayer)),
+			uintptr(unsafe.Pointer(&spatialLayer)),
+		)
+	} else {
+		result = streamAV1EncoderEncode(
+			e.handle,
+			uintptr(unsafe.Pointer(&frame.Data[0][0])),
+			uintptr(unsafe.Pointer(&frame.Data[1][0])),
+			uintptr(unsafe.Pointer(&frame.Data[2][0])),
+			int32(frame.Stride[0]),
+			int32(frame.Stride[1]),
+			forceKeyframe,
+			uintptr(unsafe.Pointer(&e.outputBuf[0])),
+			int32(len(e.outputBuf)),
+			uintptr(unsafe.Pointer(&frameType)),
+			uintptr(unsafe.Pointer(&pts)),
+		)
+	}
+
+	if result < 0 {
+		return nil, fmt.Errorf("encode failed: %s", getAV1Error())
+	}
+
+	if result == 0 {
+		return nil, nil
+	}
+
+	data := make([]byte, result)
+	copy(data, e.outputBuf[:result])
+
+	ft := FrameTypeDelta
+	if frameType == streamAV1FrameKey {
+		ft = FrameTypeKey
+	}
+
+	fps := e.config.FPS
+	if fps <= 0 {
+		fps = 30
+	}
+	timestamp := uint32(pts * (90000 / int64(fps)))
+
+	e.statsMu.Lock()
+	e.stats.FramesEncoded++
+	if ft == FrameTypeKey {
+		e.stats.KeyframesEncoded++
+	}
+	e.stats.BytesEncoded += uint64(result)
+	e.statsMu.Unlock()
+
+	return &EncodedFrame{
+		Data:            data,
+		FrameType:       ft,
+		Timestamp:       timestamp,
+		Duration:        90000 / uint32(fps),
+		TemporalLayerID: uint8(temporalLayer),
+		SpatialLayerID:  uint8(spatialLayer),
+	}, nil
+}
+
+// RequestKeyframe implements VideoEncoder.
+func (e *AV1Encoder) RequestKeyframe() {
+	e.keyframeReq.Store(true)
+	if e.handle != 0 {
+		streamAV1EncoderRequestKF(e.handle)
+	}
+}
+
+// SetBitrate implements VideoEncoder.
+func (e *AV1Encoder) SetBitrate(bitrateBps int) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.handle == 0 {
+		return fmt.Errorf("encoder not initialized")
+	}
+
+	bitrateKbps := int32(bitrateBps / 1000)
+	if streamAV1EncoderSetBitrate(e.handle, bitrateKbps) != streamAV1OK {
+		return fmt.Errorf("failed to set bitrate: %s", getAV1Error())
+	}
+
+	e.config.BitrateBps = bitrateBps
+	return nil
+}
+
+// SetSVCLayers sets both temporal and spatial layers at runtime.
+func (e *AV1Encoder) SetSVCLayers(temporalLayers, spatialLayers int) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.handle == 0 {
+		return fmt.Errorf("encoder not initialized")
+	}
+
+	if streamAV1EncoderSetTemporal(e.handle, int32(temporalLayers)) != streamAV1OK {
+		return fmt.Errorf("failed to set temporal layers: %s", getAV1Error())
+	}
+
+	if streamAV1EncoderSetSpatial(e.handle, int32(spatialLayers)) != streamAV1OK {
+		return fmt.Errorf("failed to set spatial layers: %s", getAV1Error())
+	}
+
+	e.temporalLayers = temporalLayers
+	e.spatialLayers = spatialLayers
+	e.svcEnabled = temporalLayers > 1 || spatialLayers > 1
+	e.config.TemporalLayers = temporalLayers
+	e.config.SpatialLayers = spatialLayers
+	return nil
+}
+
+// GetSVCConfig returns the current SVC configuration.
+func (e *AV1Encoder) GetSVCConfig() (temporalLayers, spatialLayers int, svcEnabled bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.handle == 0 {
+		return 1, 1, false
+	}
+
+	var tempLayers, spatLayers, enabled int32
+	streamAV1EncoderGetSVCConfig(e.handle,
+		uintptr(unsafe.Pointer(&tempLayers)),
+		uintptr(unsafe.Pointer(&spatLayers)),
+		uintptr(unsafe.Pointer(&enabled)),
+	)
+
+	return int(tempLayers), int(spatLayers), enabled != 0
+}
+
+// Config implements VideoEncoder.
+func (e *AV1Encoder) Config() VideoEncoderConfig {
+	return e.config
+}
+
+// Codec implements VideoEncoder.
+func (e *AV1Encoder) Codec() VideoCodec {
+	return VideoCodecAV1
+}
+
+// Stats implements VideoEncoder.
+func (e *AV1Encoder) Stats() EncoderStats {
+	e.statsMu.Lock()
+	defer e.statsMu.Unlock()
+	return e.stats
+}
+
+// Flush implements VideoEncoder.
+func (e *AV1Encoder) Flush() ([]*EncodedFrame, error) {
+	return nil, nil
+}
+
+// Close implements VideoEncoder.
+func (e *AV1Encoder) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.handle != 0 {
+		streamAV1EncoderDestroy(e.handle)
+		e.handle = 0
+	}
+
+	return nil
+}
+
+// AV1Decoder implements VideoDecoder for AV1.
+type AV1Decoder struct {
+	config VideoDecoderConfig
+
+	handle    uint64
+	outputBuf *VideoFrameBuffer
+	width     int
+	height    int
+
+	stats   DecoderStats
+	statsMu sync.Mutex
+	mu      sync.Mutex
+}
+
+// NewAV1Decoder creates a new AV1 decoder.
+func NewAV1Decoder(config VideoDecoderConfig) (*AV1Decoder, error) {
+	if err := loadStreamAV1(); err != nil {
+		return nil, fmt.Errorf("AV1 decoder not available: %w", err)
+	}
+
+	if streamAV1DecoderAvailable() == 0 {
+		return nil, errors.New("AV1 decoder not available (libaom not compiled)")
+	}
+
+	threads := int32(4)
+	if config.Threads > 0 {
+		threads = int32(config.Threads)
+	}
+
+	handle := streamAV1DecoderCreate(threads)
+	if handle == 0 {
+		return nil, fmt.Errorf("failed to create AV1 decoder: %s", getAV1Error())
+	}
+
+	return &AV1Decoder{
+		config: config,
+		handle: handle,
+	}, nil
+}
+
+// Decode implements VideoDecoder.
+func (d *AV1Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == 0 {
+		return nil, fmt.Errorf("decoder not initialized")
+	}
+
+	var outY, outU, outV uintptr
+	var outYStride, outUVStride, outWidth, outHeight int32
+
+	result := streamAV1DecoderDecode(
+		d.handle,
+		uintptr(unsafe.Pointer(&encoded.Data[0])),
+		int32(len(encoded.Data)),
+		uintptr(unsafe.Pointer(&outY)),
+		uintptr(unsafe.Pointer(&outU)),
+		uintptr(unsafe.Pointer(&outV)),
+		uintptr(unsafe.Pointer(&outYStride)),
+		uintptr(unsafe.Pointer(&outUVStride)),
+		uintptr(unsafe.Pointer(&outWidth)),
+		uintptr(unsafe.Pointer(&outHeight)),
+	)
+
+	if result < 0 {
+		d.statsMu.Lock()
+		d.stats.CorruptedFrames++
+		d.statsMu.Unlock()
+		return nil, fmt.Errorf("decode failed: %s", getAV1Error())
+	}
+
+	if result == 0 {
+		return nil, nil
+	}
+
+	w := int(outWidth)
+	h := int(outHeight)
+	d.width = w
+	d.height = h
+
+	if d.outputBuf == nil || d.outputBuf.Width != w || d.outputBuf.Height != h {
+		d.outputBuf = NewVideoFrameBuffer(w, h, PixelFormatI420)
+	}
+
+	uvW := w / 2
+	uvH := h / 2
+	for row := 0; row < h; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(outY+uintptr(row*int(outYStride)))), w)
+		dstStart := row * d.outputBuf.StrideY
+		copy(d.outputBuf.Y[dstStart:dstStart+w], src)
+	}
+
+	for row := 0; row < uvH; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(outU+uintptr(row*int(outUVStride)))), uvW)
+		dstStart := row * d.outputBuf.StrideU
+		copy(d.outputBuf.U[dstStart:dstStart+uvW], src)
+	}
+
+	for row := 0; row < uvH; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(outV+uintptr(row*int(outUVStride)))), uvW)
+		dstStart := row * d.outputBuf.StrideV
+		copy(d.outputBuf.V[dstStart:dstStart+uvW], src)
+	}
+
+	d.outputBuf.TimestampNs = int64(encoded.Timestamp) * 1000000 / 90
+
+	d.statsMu.Lock()
+	d.stats.FramesDecoded++
+	d.stats.BytesDecoded += uint64(len(encoded.Data))
+	if encoded.FrameType == FrameTypeKey {
+		d.stats.KeyframesDecoded++
+	}
+	d.statsMu.Unlock()
+
+	frame := d.outputBuf.ToVideoFrame()
+	return &frame, nil
+}
+
+// DecodeRTP implements VideoDecoder.
+func (d *AV1Decoder) DecodeRTP(data []byte, marker bool, timestamp uint32) (*VideoFrame, error) {
+	encoded := &EncodedFrame{
+		Data:      data,
+		Timestamp: timestamp,
+	}
+	return d.Decode(encoded)
+}
+
+// Config implements VideoDecoder.
+func (d *AV1Decoder) Config() VideoDecoderConfig {
+	return d.config
+}
+
+// Codec implements VideoDecoder.
+func (d *AV1Decoder) Codec() VideoCodec {
+	return VideoCodecAV1
+}
+
+// Stats implements VideoDecoder.
+func (d *AV1Decoder) Stats() DecoderStats {
+	d.statsMu.Lock()
+	defer d.statsMu.Unlock()
+	return d.stats
+}
+
+// Flush implements VideoDecoder.
+func (d *AV1Decoder) Flush() ([]*VideoFrame, error) {
+	return nil, nil
+}
+
+// Reset implements VideoDecoder.
+func (d *AV1Decoder) Reset() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == 0 {
+		return fmt.Errorf("decoder not initialized")
+	}
+
+	if streamAV1DecoderReset(d.handle) != streamAV1OK {
+		return fmt.Errorf("failed to reset decoder: %s", getAV1Error())
+	}
+
+	return nil
+}
+
+// GetDimensions implements VideoDecoder.
+func (d *AV1Decoder) GetDimensions() (width, height int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != 0 {
+		var w, h int32
+		streamAV1DecoderGetDimensions(d.handle, uintptr(unsafe.Pointer(&w)), uintptr(unsafe.Pointer(&h)))
+		return int(w), int(h)
+	}
+	return d.width, d.height
+}
+
+// Close implements VideoDecoder.
+func (d *AV1Decoder) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle != 0 {
+		streamAV1DecoderDestroy(d.handle)
+		d.handle = 0
+	}
+
+	return nil
+}
+
+// Register AV1 encoder and decoder
+func init() {
+	RegisterVideoEncoder(VideoCodecAV1, func(config VideoEncoderConfig) (VideoEncoder, error) {
+		return NewAV1Encoder(config)
+	})
+	RegisterVideoDecoder(VideoCodecAV1, func(config VideoDecoderConfig) (VideoDecoder, error) {
+		return NewAV1Decoder(config)
+	})
+}

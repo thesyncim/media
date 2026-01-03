@@ -1,4 +1,4 @@
-module github.com/GetStream/media
+module github.com/thesyncim/media
 
 go 1.23.0
 

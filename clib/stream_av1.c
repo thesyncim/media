@@ -131,8 +131,8 @@ stream_av1_encoder_t stream_av1_encoder_create_svc(
     state->cfg.g_lag_in_frames = 0;
     state->cfg.rc_end_usage = AOM_CBR;
     state->cfg.g_error_resilient = AOM_ERROR_RESILIENT_DEFAULT;
-    state->cfg.kf_mode = AOM_KF_DISABLED;  // Only keyframes on explicit request (PLI)
-    state->cfg.kf_max_dist = 0;
+    state->cfg.kf_mode = AOM_KF_AUTO;
+    state->cfg.kf_max_dist = 3000;  // Allow keyframes up to 100 seconds apart at 30fps
 
     // SVC configuration
     if (state->svc_enabled) {
@@ -173,6 +173,9 @@ stream_av1_encoder_t stream_av1_encoder_create_svc(
         free(state);
         return 0;
     }
+
+    // First frame must be a keyframe
+    state->force_keyframe = 1;
 
     return (stream_av1_encoder_t)(uintptr_t)state;
 }

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/GetStream/media"
+	"github.com/thesyncim/media"
 	"github.com/pion/webrtc/v4"
 )
 

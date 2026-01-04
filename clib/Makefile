@@ -10,7 +10,7 @@
 
 .PHONY: all clean install help vpx opus h264 av1 deps deps-vpx deps-opus deps-x264 deps-aom \
         clean-deps distclean info check-deps \
-        v4l2 alsa avfoundation platform-libs
+        v4l2 alsa avfoundation compositor platform-libs
 
 # Versions (pinned for reproducibility)
 LIBVPX_VERSION := 1.15.0
@@ -148,7 +148,7 @@ JOBS := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 # ==============================================================================
 
 # Default target - build all libraries
-all: vpx opus h264 av1 platform-libs
+all: vpx opus h264 av1 compositor platform-libs
 
 # Check if we need to build dependencies
 ifeq ($(USE_SYSTEM_LIBS),0)
@@ -193,6 +193,29 @@ $(OUTPUT_DIR)/$(AVFOUNDATION_LIB): stream_avfoundation.m stream_avfoundation.h |
 else
 avfoundation:
 	@echo "AVFoundation is only available on macOS"
+endif
+
+# Compositor library (cross-platform)
+ifeq ($(UNAME_S),Darwin)
+COMPOSITOR_LIB := libstream_compositor.dylib
+compositor: $(OUTPUT_DIR)/$(COMPOSITOR_LIB)
+
+$(OUTPUT_DIR)/$(COMPOSITOR_LIB): stream_compositor.c stream_compositor.h | $(OUTPUT_DIR)
+	@echo "Building $(COMPOSITOR_LIB)..."
+	$(CC) -shared -fPIC -O3 \
+		-Wl,-install_name,@rpath/libstream_compositor.dylib \
+		-o $@ stream_compositor.c
+	cp stream_compositor.h $(OUTPUT_DIR)/
+	@echo "Built: $@"
+else ifeq ($(UNAME_S),Linux)
+COMPOSITOR_LIB := libstream_compositor.so
+compositor: $(OUTPUT_DIR)/$(COMPOSITOR_LIB)
+
+$(OUTPUT_DIR)/$(COMPOSITOR_LIB): stream_compositor.c stream_compositor.h | $(OUTPUT_DIR)
+	@echo "Building $(COMPOSITOR_LIB)..."
+	$(CC) -shared -fPIC -O3 -o $@ stream_compositor.c -lm
+	cp stream_compositor.h $(OUTPUT_DIR)/
+	@echo "Built: $@"
 endif
 
 # V4L2 wrapper (Linux only)

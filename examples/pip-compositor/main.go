@@ -1,4 +1,5 @@
 // Picture-in-Picture compositor demo - composites two video sources and streams via WebRTC
+// Uses the native SIMD-optimized VideoCompositor for high-performance blending
 package main
 
 import (
@@ -10,21 +11,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GetStream/media"
+	"github.com/thesyncim/media"
 	"github.com/pion/webrtc/v4"
 )
 
 // Layout defines PiP positioning
 type Layout struct {
-	Name     string  `json:"name"`
-	MainX    int     `json:"mainX"`
-	MainY    int     `json:"mainY"`
-	MainW    int     `json:"mainW"`
-	MainH    int     `json:"mainH"`
-	OverlayX int     `json:"overlayX"`
-	OverlayY int     `json:"overlayY"`
-	OverlayW int     `json:"overlayW"`
-	OverlayH int     `json:"overlayH"`
+	Name     string `json:"name"`
+	MainX    int    `json:"mainX"`
+	MainY    int    `json:"mainY"`
+	MainW    int    `json:"mainW"`
+	MainH    int    `json:"mainH"`
+	OverlayX int    `json:"overlayX"`
+	OverlayY int    `json:"overlayY"`
+	OverlayW int    `json:"overlayW"`
+	OverlayH int    `json:"overlayH"`
 }
 
 var layouts = map[string]Layout{
@@ -54,100 +55,20 @@ var layouts = map[string]Layout{
 	},
 }
 
-type Compositor struct {
-	mu          sync.RWMutex
-	layout      Layout
-	outputFrame *media.VideoFrameBuffer
-}
-
-func NewCompositor(layout Layout) *Compositor {
-	return &Compositor{
-		layout:      layout,
-		outputFrame: media.NewVideoFrameBuffer(640, 480, media.PixelFormatI420),
-	}
-}
-
-func (c *Compositor) SetLayout(layout Layout) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.layout = layout
-}
-
-func (c *Compositor) Composite(main, overlay *media.VideoFrame) *media.VideoFrame {
-	c.mu.RLock()
-	layout := c.layout
-	c.mu.RUnlock()
-
-	// Clear output to black (Y=16, U=V=128 for black in YUV)
-	for i := range c.outputFrame.Y {
-		c.outputFrame.Y[i] = 16
-	}
-	for i := range c.outputFrame.U {
-		c.outputFrame.U[i] = 128
-	}
-	for i := range c.outputFrame.V {
-		c.outputFrame.V[i] = 128
-	}
-
-	// Scale and blit main frame
-	if main != nil && layout.MainW > 0 && layout.MainH > 0 {
-		c.blitFrame(main, layout.MainX, layout.MainY, layout.MainW, layout.MainH)
-	}
-
-	// Scale and blit overlay frame
-	if overlay != nil && layout.OverlayW > 0 && layout.OverlayH > 0 {
-		c.blitFrame(overlay, layout.OverlayX, layout.OverlayY, layout.OverlayW, layout.OverlayH)
-	}
-
-	frame := c.outputFrame.ToVideoFrame()
-	return &frame
-}
-
-func (c *Compositor) blitFrame(src *media.VideoFrame, x, y, w, h int) {
-	// Simple nearest-neighbor scaling and blit
-	srcW := src.Width
-	srcH := src.Height
-
-	for dy := 0; dy < h && (y+dy) < 480; dy++ {
-		srcY := dy * srcH / h
-		for dx := 0; dx < w && (x+dx) < 640; dx++ {
-			srcX := dx * srcW / w
-
-			dstIdx := (y+dy)*c.outputFrame.StrideY + (x + dx)
-			srcIdx := srcY*src.Stride[0] + srcX
-
-			if dstIdx < len(c.outputFrame.Y) && srcIdx < len(src.Data[0]) {
-				c.outputFrame.Y[dstIdx] = src.Data[0][srcIdx]
-			}
-
-			// UV planes (half resolution)
-			if dy%2 == 0 && dx%2 == 0 {
-				dstUVIdx := ((y+dy)/2)*c.outputFrame.StrideU + ((x + dx) / 2)
-				srcUVIdx := (srcY/2)*src.Stride[1] + (srcX / 2)
-
-				if dstUVIdx < len(c.outputFrame.U) && srcUVIdx < len(src.Data[1]) {
-					c.outputFrame.U[dstUVIdx] = src.Data[1][srcUVIdx]
-				}
-				if dstUVIdx < len(c.outputFrame.V) && srcUVIdx < len(src.Data[2]) {
-					c.outputFrame.V[dstUVIdx] = src.Data[2][srcUVIdx]
-				}
-			}
-		}
-	}
-}
-
-func (c *Compositor) Close() {
-	// Nothing to clean up for simple compositor
-}
-
 var (
-	globalCompositor *Compositor
-	layoutMu         sync.RWMutex
+	globalLayout    Layout
+	globalLayoutMu  sync.RWMutex
 )
 
 func main() {
-	globalCompositor = NewCompositor(layouts["pip-br"])
-	defer globalCompositor.Close()
+	globalLayout = layouts["pip-br"]
+
+	// Check if native compositor is available
+	if media.IsCompositorAvailable() {
+		log.Println("Native SIMD compositor available")
+	} else {
+		log.Println("WARNING: Native compositor not available, using fallback")
+	}
 
 	http.HandleFunc("/", serveHTML)
 	http.HandleFunc("/offer", handleOffer)
@@ -160,9 +81,9 @@ func main() {
 func handleLayout(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "application/json")
-		layoutMu.RLock()
+		globalLayoutMu.RLock()
 		json.NewEncoder(w).Encode(layouts)
-		layoutMu.RUnlock()
+		globalLayoutMu.RUnlock()
 		return
 	}
 
@@ -181,7 +102,9 @@ func handleLayout(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		globalCompositor.SetLayout(layout)
+		globalLayoutMu.Lock()
+		globalLayout = layout
+		globalLayoutMu.Unlock()
 		log.Printf("Layout changed to: %s", layout.Name)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -279,6 +202,9 @@ func startStream(offer webrtc.SessionDescription) (*webrtc.SessionDescription, e
 func streamComposited(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP, pliChan <-chan struct{}) {
 	log.Println("Starting composited stream...")
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Create two test pattern sources
 	mainSource := media.NewTestPatternSource(media.TestPatternConfig{
 		Width:   640,
@@ -286,6 +212,7 @@ func streamComposited(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticR
 		FPS:     30,
 		Pattern: media.PatternMovingBox,
 	})
+	defer mainSource.Close()
 
 	overlaySource := media.NewTestPatternSource(media.TestPatternConfig{
 		Width:   320,
@@ -293,6 +220,24 @@ func streamComposited(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticR
 		FPS:     30,
 		Pattern: media.PatternColorBars,
 	})
+	defer overlaySource.Close()
+
+	// Create native VideoCompositor
+	compositor, err := media.NewVideoCompositor(media.CompositorConfig{
+		Width:      640,
+		Height:     480,
+		FPS:        30,
+		Background: [3]byte{16, 128, 128}, // Black in YUV
+	})
+	if err != nil {
+		log.Printf("Compositor error: %v", err)
+		return
+	}
+	defer compositor.Close()
+
+	// Add layers - will be updated per-frame based on layout
+	mainLayerID := compositor.AddLayer(mainSource, 0, 0)
+	overlayLayerID := compositor.AddLayer(overlaySource, 0, 0)
 
 	encoder, err := media.NewVP8Encoder(media.VideoEncoderConfig{
 		Width:            640,
@@ -313,11 +258,12 @@ func streamComposited(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticR
 		return
 	}
 
-	ctx := context.Background()
 	mainSource.Start(ctx)
 	overlaySource.Start(ctx)
+	compositor.Start(ctx)
 	defer mainSource.Stop()
 	defer overlaySource.Stop()
+	defer compositor.Stop()
 
 	ticker := time.NewTicker(time.Second / 30)
 	defer ticker.Stop()
@@ -335,15 +281,20 @@ func streamComposited(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticR
 				return
 			}
 
-			mainFrame, _ := mainSource.ReadFrame(ctx)
-			overlayFrame, _ := overlaySource.ReadFrame(ctx)
+			// Update layer positions based on current layout
+			globalLayoutMu.RLock()
+			layout := globalLayout
+			globalLayoutMu.RUnlock()
 
-			if mainFrame == nil {
-				continue
-			}
+			compositor.SetLayerPosition(mainLayerID, layout.MainX, layout.MainY)
+			compositor.SetLayerSize(mainLayerID, layout.MainW, layout.MainH)
+			compositor.SetLayerPosition(overlayLayerID, layout.OverlayX, layout.OverlayY)
+			compositor.SetLayerSize(overlayLayerID, layout.OverlayW, layout.OverlayH)
+			compositor.SetLayerZOrder(overlayLayerID, 1) // Overlay on top
 
-			composited := globalCompositor.Composite(mainFrame, overlayFrame)
-			if composited == nil {
+			// Read composited frame
+			composited, err := compositor.ReadFrame(ctx)
+			if err != nil || composited == nil {
 				continue
 			}
 
@@ -395,11 +346,12 @@ func serveHTML(w http.ResponseWriter, r *http.Request) {
         .layout-btn.active { border-color: #00d4ff; }
         .layout-btn .main { position: absolute; background: #00d4ff; opacity: 0.7; }
         .layout-btn .overlay { position: absolute; background: #ff6b6b; opacity: 0.9; }
+        .badge { display: inline-block; padding: 2px 8px; background: #00d4ff; color: #000; border-radius: 4px; font-size: 11px; margin-left: 10px; }
     </style>
 </head>
 <body>
-    <h1>Picture-in-Picture Compositor</h1>
-    <p class="subtitle">Two video sources composited in real-time, streamed via WebRTC</p>
+    <h1>Picture-in-Picture Compositor <span class="badge">SIMD Optimized</span></h1>
+    <p class="subtitle">Two video sources composited in real-time using native SIMD blending, streamed via WebRTC</p>
 
     <video id="video" autoplay playsinline muted></video>
 

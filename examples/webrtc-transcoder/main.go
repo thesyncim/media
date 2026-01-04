@@ -350,6 +350,11 @@ func startTranscodePipeline(pub *Publisher) {
 	mt, err := media.NewMultiTranscoder(media.MultiTranscoderConfig{
 		InputCodec: pub.codec,
 		Outputs:    outputs,
+		// Auto-recovery: when decoder needs keyframe, request PLI from publisher
+		OnKeyframeNeeded: func() error {
+			log.Printf("Transcoder: auto-requesting keyframe from publisher")
+			return pub.RequestKeyframe()
+		},
 	})
 	if err != nil {
 		log.Printf("Failed to create transcoder: %v", err)
@@ -399,13 +404,6 @@ func runTranscodeLoop(p *TranscodePipeline) {
 	// Timeout for transcode operations - prevents hangs
 	const transcodeTimeout = 500 * time.Millisecond
 
-	// Recovery tracking
-	var consecutiveDrops int64
-	var lastSuccessTime = time.Now()
-	var needsKeyframe = false
-	const keyframeRecoveryThreshold = 3 // Request keyframe after 3 consecutive drops
-	const stallRecoveryTimeout = 2 * time.Second
-
 	for {
 		select {
 		case <-p.ctx.Done():
@@ -422,16 +420,6 @@ func runTranscodeLoop(p *TranscodePipeline) {
 				}
 				gotKeyframe = true
 				log.Printf("Transcode: received first keyframe, starting decode")
-			}
-
-			// If we need a keyframe for recovery, wait for one
-			if needsKeyframe {
-				if frame.FrameType != media.FrameTypeKey {
-					continue // Skip until we get keyframe
-				}
-				needsKeyframe = false
-				consecutiveDrops = 0
-				log.Printf("Transcode: received recovery keyframe, resuming")
 			}
 
 			// Transcode with timeout to prevent hangs
@@ -457,21 +445,10 @@ func runTranscodeLoop(p *TranscodePipeline) {
 				return
 			case <-time.After(transcodeTimeout):
 				p.frameDrops.Add(1)
-				consecutiveDrops++
-
-				// Check if we need to trigger recovery
-				if consecutiveDrops >= keyframeRecoveryThreshold {
-					needsKeyframe = true
-					// Request keyframe from PUBLISHER (input) - this is the key fix!
-					if err := p.publisher.RequestKeyframe(); err != nil {
-						log.Printf("Transcode: failed to request PLI: %v", err)
-					}
-					p.transcoder.RequestKeyframeAll() // Also request from encoders
-					log.Printf("Transcode: %d consecutive timeouts, requesting keyframe from publisher", consecutiveDrops)
-				} else if p.frameDrops.Load()%10 == 0 {
-					log.Printf("Transcode: timeout after %v, dropped %d frames total",
-						transcodeTimeout, p.frameDrops.Load())
+				if p.frameDrops.Load()%10 == 0 {
+					log.Printf("Transcode: timeout, dropped %d frames total", p.frameDrops.Load())
 				}
+				// Transcoder will auto-request keyframe from source after consecutive errors
 				continue
 			case res := <-resultCh:
 				result = res.result
@@ -483,27 +460,16 @@ func runTranscodeLoop(p *TranscodePipeline) {
 			p.lastFrameTime.Store(time.Now().UnixNano())
 
 			if err != nil {
-				consecutiveDrops++
-				// Request keyframe on errors too - from PUBLISHER (input)
-				if consecutiveDrops >= keyframeRecoveryThreshold {
-					needsKeyframe = true
-					if pliErr := p.publisher.RequestKeyframe(); pliErr != nil {
-						log.Printf("Transcode: failed to request PLI: %v", pliErr)
-					}
-					p.transcoder.RequestKeyframeAll()
-					log.Printf("Transcode: %d consecutive errors, requesting keyframe from publisher: %v", consecutiveDrops, err)
-				} else if frameCount%100 == 0 {
+				// Transcoder handles auto-recovery internally
+				if frameCount%100 == 0 {
 					log.Printf("Transcode error (frame %d): %v", frameCount, err)
 				}
 				continue
 			}
 			if result == nil {
+				// Transcoder may be waiting for keyframe (auto-recovery in progress)
 				continue
 			}
-
-			// Success! Reset recovery state
-			consecutiveDrops = 0
-			lastSuccessTime = time.Now()
 
 			// Broadcast to all subscribers per variant
 			p.subscribersMu.RLock()
@@ -536,20 +502,6 @@ func runTranscodeLoop(p *TranscodePipeline) {
 				log.Printf("Transcoded %d frames (%.1f fps), %d variants, %d subscribers, avg encode: %.1fms, drops: %d",
 					frameCount, float64(frameCount)/elapsed, len(result.Variants), totalSubs, avgEncMs, p.frameDrops.Load())
 			}
-
-		default:
-			// No frame available - check for stall recovery
-			if time.Since(lastSuccessTime) > stallRecoveryTimeout && gotKeyframe {
-				// We haven't had a successful transcode in a while
-				// Request keyframe from PUBLISHER to try to recover
-				if err := p.publisher.RequestKeyframe(); err != nil {
-					log.Printf("Transcode: failed to request PLI: %v", err)
-				}
-				needsKeyframe = true // Also wait for the keyframe
-				lastSuccessTime = time.Now() // Reset to avoid spamming
-				log.Printf("Transcode: stall detected, requesting keyframe from publisher")
-			}
-			time.Sleep(5 * time.Millisecond) // Small sleep to avoid busy loop
 		}
 	}
 }

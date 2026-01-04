@@ -708,8 +708,18 @@ type MultiTranscoder struct {
 	// Concurrency control
 	inFlightEncodes int32 // atomic: tracks goroutines currently encoding
 
+	// Auto-recovery: callback to request keyframe from source
+	onKeyframeNeeded    KeyframeRequestFunc
+	needsKeyframe       int32     // atomic: 1 if waiting for keyframe
+	consecutiveErrors   int32     // atomic: count of consecutive decode errors
+	lastKeyframeRequest time.Time // rate limit keyframe requests
+
 	mu sync.RWMutex // RWMutex allows concurrent reads (RequestKeyframe, etc)
 }
+
+// KeyframeRequestFunc is called when the transcoder needs a keyframe from the source.
+// This is typically used to send PLI (Picture Loss Indication) to the video source.
+type KeyframeRequestFunc func() error
 
 // MultiTranscoderConfig configures a multi-output transcoder.
 type MultiTranscoderConfig struct {
@@ -728,6 +738,11 @@ type MultiTranscoderConfig struct {
 	// EncodeTimeout is the maximum time to wait for all encoders.
 	// Default is 500ms. Set to 0 to wait forever (not recommended).
 	EncodeTimeout time.Duration
+
+	// OnKeyframeNeeded is called when the decoder needs a keyframe from the source.
+	// Set this to send PLI/FIR to your video source (e.g., WebRTC peer connection).
+	// If not set, the transcoder will wait for a keyframe but cannot request one.
+	OnKeyframeNeeded KeyframeRequestFunc
 }
 
 // NewMultiTranscoder creates a transcoder that outputs multiple variants.
@@ -758,12 +773,13 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 	}
 
 	mt := &MultiTranscoder{
-		inputCodec:    config.InputCodec,
-		inputWidth:    config.InputWidth,
-		inputHeight:   config.InputHeight,
-		inputFPS:      config.InputFPS,
-		pipelines:     make(map[string]*outputPipeline),
-		encodeTimeout: encodeTimeout,
+		inputCodec:       config.InputCodec,
+		inputWidth:       config.InputWidth,
+		inputHeight:      config.InputHeight,
+		inputFPS:         config.InputFPS,
+		pipelines:        make(map[string]*outputPipeline),
+		encodeTimeout:    encodeTimeout,
+		onKeyframeNeeded: config.OnKeyframeNeeded,
 	}
 
 	// Create encoders for each variant (skip for passthrough)
@@ -905,10 +921,38 @@ func (mt *MultiTranscoder) Transcode(input *EncodedFrame) (*TranscodeResult, err
 		mt.decoder = decoder
 	}
 
+	// Auto-recovery: if waiting for keyframe, skip non-keyframes
+	if atomic.LoadInt32(&mt.needsKeyframe) == 1 {
+		if input.FrameType != FrameTypeKey {
+			// Still waiting for keyframe - return passthrough only
+			if len(result.Variants) > 0 {
+				return result, nil
+			}
+			return nil, nil
+		}
+		// Got keyframe! Reset recovery state
+		atomic.StoreInt32(&mt.needsKeyframe, 0)
+		atomic.StoreInt32(&mt.consecutiveErrors, 0)
+	}
+
 	// Decode
 	rawFrame, err := mt.decoder.Decode(input)
 	if err != nil {
-		return nil, err
+		// Track consecutive errors for auto-recovery
+		errCount := atomic.AddInt32(&mt.consecutiveErrors, 1)
+
+		// After 3 consecutive errors, request keyframe from source
+		if errCount >= 3 && mt.onKeyframeNeeded != nil {
+			// Rate limit: max once per 500ms
+			if time.Since(mt.lastKeyframeRequest) > 500*time.Millisecond {
+				mt.lastKeyframeRequest = time.Now()
+				atomic.StoreInt32(&mt.needsKeyframe, 1)
+				// Call the callback (non-blocking)
+				go mt.onKeyframeNeeded()
+			}
+		}
+
+		return nil, fmt.Errorf("decode failed: %w", err)
 	}
 	if rawFrame == nil {
 		// Decoder buffering - return any passthrough results we have
@@ -917,6 +961,9 @@ func (mt *MultiTranscoder) Transcode(input *EncodedFrame) (*TranscodeResult, err
 		}
 		return nil, nil
 	}
+
+	// Success! Reset error counter
+	atomic.StoreInt32(&mt.consecutiveErrors, 0)
 
 	// Update input dimensions from decoded frame
 	if mt.inputWidth == 0 {
@@ -1123,7 +1170,29 @@ func (mt *MultiTranscoder) prepareInputFrame(frame *VideoFrame, pipeline *output
 	return pipeline.scaler.Scale(frame)
 }
 
-// RequestKeyframe requests a keyframe from a specific variant.
+// SetKeyframeCallback sets the callback for requesting keyframes from the source.
+// This should be called to enable automatic recovery when the decoder needs a keyframe.
+func (mt *MultiTranscoder) SetKeyframeCallback(fn KeyframeRequestFunc) {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	mt.onKeyframeNeeded = fn
+}
+
+// NeedsKeyframe returns true if the transcoder is waiting for a keyframe to recover.
+func (mt *MultiTranscoder) NeedsKeyframe() bool {
+	return atomic.LoadInt32(&mt.needsKeyframe) == 1
+}
+
+// RequestSourceKeyframe manually triggers a keyframe request from the source.
+// This is automatically called on decode errors, but can be called manually if needed.
+func (mt *MultiTranscoder) RequestSourceKeyframe() {
+	if mt.onKeyframeNeeded != nil {
+		atomic.StoreInt32(&mt.needsKeyframe, 1)
+		go mt.onKeyframeNeeded()
+	}
+}
+
+// RequestKeyframe requests a keyframe from a specific output variant (encoder).
 func (mt *MultiTranscoder) RequestKeyframe(variantID string) {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()

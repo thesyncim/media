@@ -27,7 +27,7 @@ clean:
 
 # Run tests with library path set
 test:
-	STREAM_SDK_LIB_PATH=$(BUILD_DIR) CGO_ENABLED=0 go test -v ./...
+	MEDIA_SDK_LIB_PATH=$(BUILD_DIR) CGO_ENABLED=0 go test -v ./...
 
 # Run tests with CGO
 test-cgo:
@@ -39,7 +39,7 @@ check: build test
 # Run webrtc-pattern example
 run-example:
 	@echo "Libraries in: $(BUILD_DIR)"
-	cd examples/webrtc-pattern && STREAM_SDK_LIB_PATH=$(BUILD_DIR) CGO_ENABLED=0 go run .
+	cd examples/webrtc-pattern && MEDIA_SDK_LIB_PATH=$(BUILD_DIR) CGO_ENABLED=0 go run .
 
 # Show available targets
 help:
@@ -55,7 +55,7 @@ help:
 	@echo "  run-example  - Run webrtc-pattern example"
 	@echo ""
 	@echo "Libraries are placed in ./build/"
-	@echo "Set STREAM_SDK_LIB_PATH=$(BUILD_DIR) when running outside make"
+	@echo "Set MEDIA_SDK_LIB_PATH=$(BUILD_DIR) when running outside make"
 
 # Show build info
 info:

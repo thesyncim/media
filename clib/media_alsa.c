@@ -1,7 +1,7 @@
-// stream_alsa.c - ALSA wrapper implementation for Linux
+// media_alsa.c - ALSA wrapper implementation for Linux
 //
 // Compile with:
-//   cc -shared -fPIC -O2 -o libstream_alsa.so stream_alsa.c -lasound -lpthread
+//   cc -shared -fPIC -O2 -o libmedia_alsa.so media_alsa.c -lasound -lpthread
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -13,7 +13,7 @@
 #include <time.h>
 #include <alsa/asoundlib.h>
 
-#include "stream_alsa.h"
+#include "media_alsa.h"
 
 // Thread-local error buffer
 static __thread char error_buffer[256] = {0};
@@ -25,7 +25,7 @@ static void set_error(const char* fmt, ...) {
     va_end(args);
 }
 
-const char* stream_alsa_get_error(void) {
+const char* media_alsa_get_error(void) {
     return error_buffer;
 }
 
@@ -74,7 +74,7 @@ static void enumerate_devices(void) {
             snd_pcm_info_alloca(&pcm_info);
             snd_pcm_info_set_device(pcm_info, device);
             snd_pcm_info_set_subdevice(pcm_info, 0);
-            snd_pcm_info_set_stream(pcm_info, SND_PCM_STREAM_CAPTURE);
+            snd_pcm_info_set_stream(pcm_info, SND_PCM_MEDIA_CAPTURE);
 
             if (snd_ctl_pcm_info(ctl, pcm_info) >= 0) {
                 count++;
@@ -117,7 +117,7 @@ static void enumerate_devices(void) {
             snd_pcm_info_alloca(&pcm_info);
             snd_pcm_info_set_device(pcm_info, device);
             snd_pcm_info_set_subdevice(pcm_info, 0);
-            snd_pcm_info_set_stream(pcm_info, SND_PCM_STREAM_CAPTURE);
+            snd_pcm_info_set_stream(pcm_info, SND_PCM_MEDIA_CAPTURE);
 
             if (snd_ctl_pcm_info(ctl, pcm_info) >= 0) {
                 char hw_id[64];
@@ -143,12 +143,12 @@ static void enumerate_devices(void) {
     pthread_mutex_unlock(&cache_mutex);
 }
 
-int32_t stream_alsa_input_device_count(void) {
+int32_t media_alsa_input_device_count(void) {
     enumerate_devices();
     return cached_device_count;
 }
 
-const char* stream_alsa_input_device_id(int32_t index) {
+const char* media_alsa_input_device_id(int32_t index) {
     pthread_mutex_lock(&cache_mutex);
     if (index < 0 || index >= cached_device_count) {
         pthread_mutex_unlock(&cache_mutex);
@@ -159,7 +159,7 @@ const char* stream_alsa_input_device_id(int32_t index) {
     return result;
 }
 
-const char* stream_alsa_input_device_name(int32_t index) {
+const char* media_alsa_input_device_name(int32_t index) {
     pthread_mutex_lock(&cache_mutex);
     if (index < 0 || index >= cached_device_count) {
         pthread_mutex_unlock(&cache_mutex);
@@ -170,14 +170,14 @@ const char* stream_alsa_input_device_name(int32_t index) {
     return result;
 }
 
-StreamALSADeviceInfo* stream_alsa_get_input_device_info(int32_t index) {
+MediaALSADeviceInfo* media_alsa_get_input_device_info(int32_t index) {
     pthread_mutex_lock(&cache_mutex);
     if (index < 0 || index >= cached_device_count) {
         pthread_mutex_unlock(&cache_mutex);
         return NULL;
     }
 
-    StreamALSADeviceInfo* info = malloc(sizeof(StreamALSADeviceInfo));
+    MediaALSADeviceInfo* info = malloc(sizeof(MediaALSADeviceInfo));
     if (!info) {
         pthread_mutex_unlock(&cache_mutex);
         return NULL;
@@ -192,7 +192,7 @@ StreamALSADeviceInfo* stream_alsa_get_input_device_info(int32_t index) {
     return info;
 }
 
-void stream_alsa_free_device_info(StreamALSADeviceInfo* info) {
+void media_alsa_free_device_info(MediaALSADeviceInfo* info) {
     if (info) {
         free(info->hw_id);
         free(info->name);
@@ -200,7 +200,7 @@ void stream_alsa_free_device_info(StreamALSADeviceInfo* info) {
     }
 }
 
-void stream_alsa_free_string(const char* str) {
+void media_alsa_free_string(const char* str) {
     if (str) {
         free((void*)str);
     }
@@ -213,7 +213,7 @@ typedef struct {
     int channels;
     snd_pcm_uframes_t period_size;
 
-    StreamALSAAudioCallback callback;
+    MediaALSAAudioCallback callback;
     void* user_data;
 
     pthread_t capture_thread;
@@ -262,11 +262,11 @@ static void* capture_thread_func(void* arg) {
     return NULL;
 }
 
-StreamALSACapture stream_alsa_capture_create(
+MediaALSACapture media_alsa_capture_create(
     const char* device_id,
     int32_t sample_rate,
     int32_t channels,
-    StreamALSAAudioCallback callback,
+    MediaALSAAudioCallback callback,
     void* user_data
 ) {
     const char* device = device_id ? device_id : "default";
@@ -274,7 +274,7 @@ StreamALSACapture stream_alsa_capture_create(
 
     // Open PCM device for capture
     snd_pcm_t* pcm;
-    err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_CAPTURE, 0);
+    err = snd_pcm_open(&pcm, device, SND_PCM_MEDIA_CAPTURE, 0);
     if (err < 0) {
         set_error("Cannot open audio device %s: %s", device, snd_strerror(err));
         return 0;
@@ -373,21 +373,21 @@ StreamALSACapture stream_alsa_capture_create(
         return 0;
     }
 
-    return (StreamALSACapture)ctx;
+    return (MediaALSACapture)ctx;
 }
 
-int32_t stream_alsa_capture_start(StreamALSACapture handle) {
-    if (!handle) return STREAM_ALSA_ERROR;
+int32_t media_alsa_capture_start(MediaALSACapture handle) {
+    if (!handle) return MEDIA_ALSA_ERROR;
 
     CaptureContext* ctx = (CaptureContext*)handle;
 
-    if (ctx->running) return STREAM_ALSA_OK;
+    if (ctx->running) return MEDIA_ALSA_OK;
 
     // Prepare PCM
     int err = snd_pcm_prepare(ctx->pcm);
     if (err < 0) {
         set_error("Cannot prepare audio device: %s", snd_strerror(err));
-        return STREAM_ALSA_ERROR;
+        return MEDIA_ALSA_ERROR;
     }
 
     // Start capture thread
@@ -395,34 +395,34 @@ int32_t stream_alsa_capture_start(StreamALSACapture handle) {
     if (pthread_create(&ctx->capture_thread, NULL, capture_thread_func, ctx) != 0) {
         set_error("Failed to create capture thread");
         ctx->running = 0;
-        return STREAM_ALSA_ERROR;
+        return MEDIA_ALSA_ERROR;
     }
 
-    return STREAM_ALSA_OK;
+    return MEDIA_ALSA_OK;
 }
 
-int32_t stream_alsa_capture_stop(StreamALSACapture handle) {
-    if (!handle) return STREAM_ALSA_ERROR;
+int32_t media_alsa_capture_stop(MediaALSACapture handle) {
+    if (!handle) return MEDIA_ALSA_ERROR;
 
     CaptureContext* ctx = (CaptureContext*)handle;
 
-    if (!ctx->running) return STREAM_ALSA_OK;
+    if (!ctx->running) return MEDIA_ALSA_OK;
 
     // Stop capture thread
     ctx->running = 0;
     snd_pcm_drop(ctx->pcm);  // Wake up blocking read
     pthread_join(ctx->capture_thread, NULL);
 
-    return STREAM_ALSA_OK;
+    return MEDIA_ALSA_OK;
 }
 
-void stream_alsa_capture_destroy(StreamALSACapture handle) {
+void media_alsa_capture_destroy(MediaALSACapture handle) {
     if (!handle) return;
 
     CaptureContext* ctx = (CaptureContext*)handle;
 
     // Stop if running
-    stream_alsa_capture_stop(handle);
+    media_alsa_capture_stop(handle);
 
     // Close PCM
     snd_pcm_close(ctx->pcm);
@@ -432,12 +432,12 @@ void stream_alsa_capture_destroy(StreamALSACapture handle) {
     free(ctx);
 }
 
-int32_t stream_alsa_capture_get_sample_rate(StreamALSACapture handle) {
+int32_t media_alsa_capture_get_sample_rate(MediaALSACapture handle) {
     if (!handle) return 0;
     return ((CaptureContext*)handle)->sample_rate;
 }
 
-int32_t stream_alsa_capture_get_channels(StreamALSACapture handle) {
+int32_t media_alsa_capture_get_channels(MediaALSACapture handle) {
     if (!handle) return 0;
     return ((CaptureContext*)handle)->channels;
 }

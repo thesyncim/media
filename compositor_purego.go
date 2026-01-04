@@ -1,6 +1,6 @@
 //go:build (darwin || linux) && !cgo
 
-// Package media provides video compositing via libstream_compositor using purego.
+// Package media provides video compositing via libmedia_compositor using purego.
 
 package media
 
@@ -17,20 +17,20 @@ import (
 )
 
 var (
-	streamCompositorOnce    sync.Once
-	streamCompositorHandle  uintptr
-	streamCompositorInitErr error
-	streamCompositorLoaded  bool
+	mediaCompositorOnce    sync.Once
+	mediaCompositorHandle  uintptr
+	mediaCompositorInitErr error
+	mediaCompositorLoaded  bool
 )
 
-// libstream_compositor function pointers
+// libmedia_compositor function pointers
 var (
-	streamCompositorCreate     func(width, height int32) uintptr
-	streamCompositorDestroy    func(comp uintptr)
-	streamCompositorClear      func(comp uintptr, y, u, v uint8)
-	streamCompositorBlendLayer func(comp uintptr, srcY, srcU, srcV, srcA uintptr, srcW, srcH, srcStrideY, srcStrideUV int32, config uintptr)
-	streamCompositorGetResult  func(comp uintptr, outY, outU, outV, outStrideY, outStrideUV uintptr)
-	streamCompositorGetSize    func(comp uintptr, width, height uintptr)
+	mediaCompositorCreate     func(width, height int32) uintptr
+	mediaCompositorDestroy    func(comp uintptr)
+	mediaCompositorClear      func(comp uintptr, y, u, v uint8)
+	mediaCompositorBlendLayer func(comp uintptr, srcY, srcU, srcV, srcA uintptr, srcW, srcH, srcStrideY, srcStrideUV int32, config uintptr)
+	mediaCompositorGetResult  func(comp uintptr, outY, outU, outV, outStrideY, outStrideUV uintptr)
+	mediaCompositorGetSize    func(comp uintptr, width, height uintptr)
 )
 
 // StreamLayerConfig matches the C struct for layer configuration.
@@ -45,26 +45,26 @@ type streamLayerConfigC struct {
 	BlendMode int32
 }
 
-// loadStreamCompositor loads the libstream_compositor shared library.
-func loadStreamCompositor() error {
-	streamCompositorOnce.Do(func() {
-		streamCompositorInitErr = loadStreamCompositorLib()
-		if streamCompositorInitErr == nil {
-			streamCompositorLoaded = true
+// loadMediaCompositor loads the libmedia_compositor shared library.
+func loadMediaCompositor() error {
+	mediaCompositorOnce.Do(func() {
+		mediaCompositorInitErr = loadMediaCompositorLib()
+		if mediaCompositorInitErr == nil {
+			mediaCompositorLoaded = true
 		}
 	})
-	return streamCompositorInitErr
+	return mediaCompositorInitErr
 }
 
-func loadStreamCompositorLib() error {
-	paths := getStreamCompositorLibPaths()
+func loadMediaCompositorLib() error {
+	paths := getMediaCompositorLibPaths()
 
 	var lastErr error
 	for _, path := range paths {
 		handle, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
 		if err == nil {
-			streamCompositorHandle = handle
-			if err := loadStreamCompositorSymbols(); err != nil {
+			mediaCompositorHandle = handle
+			if err := loadMediaCompositorSymbols(); err != nil {
 				purego.Dlclose(handle)
 				lastErr = err
 				continue
@@ -75,24 +75,24 @@ func loadStreamCompositorLib() error {
 	}
 
 	if lastErr != nil {
-		return fmt.Errorf("failed to load libstream_compositor: %w", lastErr)
+		return fmt.Errorf("failed to load libmedia_compositor: %w", lastErr)
 	}
-	return errors.New("libstream_compositor not found in any standard location")
+	return errors.New("libmedia_compositor not found in any standard location")
 }
 
-func getStreamCompositorLibPaths() []string {
+func getMediaCompositorLibPaths() []string {
 	var paths []string
 
-	libName := "libstream_compositor.so"
+	libName := "libmedia_compositor.so"
 	if runtime.GOOS == "darwin" {
-		libName = "libstream_compositor.dylib"
+		libName = "libmedia_compositor.dylib"
 	}
 
 	// Environment variable overrides
-	if envPath := os.Getenv("STREAM_COMPOSITOR_LIB_PATH"); envPath != "" {
+	if envPath := os.Getenv("MEDIA_COMPOSITOR_LIB_PATH"); envPath != "" {
 		paths = append(paths, envPath)
 	}
-	if envPath := os.Getenv("STREAM_SDK_LIB_PATH"); envPath != "" {
+	if envPath := os.Getenv("MEDIA_SDK_LIB_PATH"); envPath != "" {
 		paths = append(paths, filepath.Join(envPath, libName))
 	}
 
@@ -156,31 +156,31 @@ func getStreamCompositorLibPaths() []string {
 	return paths
 }
 
-func loadStreamCompositorSymbols() error {
-	purego.RegisterLibFunc(&streamCompositorCreate, streamCompositorHandle, "stream_compositor_create")
-	purego.RegisterLibFunc(&streamCompositorDestroy, streamCompositorHandle, "stream_compositor_destroy")
-	purego.RegisterLibFunc(&streamCompositorClear, streamCompositorHandle, "stream_compositor_clear")
-	purego.RegisterLibFunc(&streamCompositorBlendLayer, streamCompositorHandle, "stream_compositor_blend_layer")
-	purego.RegisterLibFunc(&streamCompositorGetResult, streamCompositorHandle, "stream_compositor_get_result")
-	purego.RegisterLibFunc(&streamCompositorGetSize, streamCompositorHandle, "stream_compositor_get_size")
+func loadMediaCompositorSymbols() error {
+	purego.RegisterLibFunc(&mediaCompositorCreate, mediaCompositorHandle, "media_compositor_create")
+	purego.RegisterLibFunc(&mediaCompositorDestroy, mediaCompositorHandle, "media_compositor_destroy")
+	purego.RegisterLibFunc(&mediaCompositorClear, mediaCompositorHandle, "media_compositor_clear")
+	purego.RegisterLibFunc(&mediaCompositorBlendLayer, mediaCompositorHandle, "media_compositor_blend_layer")
+	purego.RegisterLibFunc(&mediaCompositorGetResult, mediaCompositorHandle, "media_compositor_get_result")
+	purego.RegisterLibFunc(&mediaCompositorGetSize, mediaCompositorHandle, "media_compositor_get_size")
 	return nil
 }
 
-// IsCompositorAvailable checks if libstream_compositor is available.
+// IsCompositorAvailable checks if libmedia_compositor is available.
 func IsCompositorAvailable() bool {
-	if err := loadStreamCompositor(); err != nil {
+	if err := loadMediaCompositor(); err != nil {
 		return false
 	}
-	return streamCompositorLoaded
+	return mediaCompositorLoaded
 }
 
 // compositorCreate creates a new compositor instance.
 func compositorCreate(width, height int) (uintptr, error) {
-	if err := loadStreamCompositor(); err != nil {
+	if err := loadMediaCompositor(); err != nil {
 		return 0, err
 	}
 
-	handle := streamCompositorCreate(int32(width), int32(height))
+	handle := mediaCompositorCreate(int32(width), int32(height))
 	if handle == 0 {
 		return 0, errors.New("failed to create compositor")
 	}
@@ -190,15 +190,15 @@ func compositorCreate(width, height int) (uintptr, error) {
 
 // compositorDestroy destroys a compositor instance.
 func compositorDestroy(handle uintptr) {
-	if handle != 0 && streamCompositorDestroy != nil {
-		streamCompositorDestroy(handle)
+	if handle != 0 && mediaCompositorDestroy != nil {
+		mediaCompositorDestroy(handle)
 	}
 }
 
 // compositorClear clears the canvas with a solid YUV color.
 func compositorClear(handle uintptr, y, u, v byte) {
-	if handle != 0 && streamCompositorClear != nil {
-		streamCompositorClear(handle, y, u, v)
+	if handle != 0 && mediaCompositorClear != nil {
+		mediaCompositorClear(handle, y, u, v)
 	}
 }
 
@@ -212,7 +212,7 @@ func compositorBlendLayer(
 	visible bool,
 	blendMode BlendMode,
 ) {
-	if handle == 0 || streamCompositorBlendLayer == nil {
+	if handle == 0 || mediaCompositorBlendLayer == nil {
 		return
 	}
 
@@ -248,7 +248,7 @@ func compositorBlendLayer(
 
 	configPtr := uintptr(unsafe.Pointer(&config))
 
-	streamCompositorBlendLayer(
+	mediaCompositorBlendLayer(
 		handle,
 		srcYPtr, srcUPtr, srcVPtr, srcAPtr,
 		int32(srcW), int32(srcH), int32(srcStrideY), int32(srcStrideUV),
@@ -259,13 +259,13 @@ func compositorBlendLayer(
 // compositorGetResult gets the composited result from the canvas.
 // Returns copies of the Y, U, V planes and their strides.
 func compositorGetResult(handle uintptr) (y, u, v []byte, strideY, strideUV int) {
-	if handle == 0 || streamCompositorGetResult == nil || streamCompositorGetSize == nil {
+	if handle == 0 || mediaCompositorGetResult == nil || mediaCompositorGetSize == nil {
 		return nil, nil, nil, 0, 0
 	}
 
 	// Get canvas dimensions
 	var width, height int32
-	streamCompositorGetSize(handle, uintptr(unsafe.Pointer(&width)), uintptr(unsafe.Pointer(&height)))
+	mediaCompositorGetSize(handle, uintptr(unsafe.Pointer(&width)), uintptr(unsafe.Pointer(&height)))
 	if width <= 0 || height <= 0 {
 		return nil, nil, nil, 0, 0
 	}
@@ -273,7 +273,7 @@ func compositorGetResult(handle uintptr) (y, u, v []byte, strideY, strideUV int)
 	// Get result pointers
 	var outY, outU, outV uintptr
 	var outStrideY, outStrideUV int32
-	streamCompositorGetResult(
+	mediaCompositorGetResult(
 		handle,
 		uintptr(unsafe.Pointer(&outY)),
 		uintptr(unsafe.Pointer(&outU)),

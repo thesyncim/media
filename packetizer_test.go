@@ -342,6 +342,186 @@ func TestPacketizeToBytes(t *testing.T) {
 	t.Logf("PacketizeToBytes: produced %d packets", len(bytes))
 }
 
+func TestAV1Packetizer(t *testing.T) {
+	pkt := NewAV1Packetizer(12345, 97, 1200)
+
+	// Create a test frame with valid AV1 OBU structure
+	// Sequence Header OBU: header 0x0a (type=1, hasSize=0) + 8 bytes payload
+	// Frame OBU: header 0x30 (type=6, hasSize=0) + payload
+	frame := &EncodedFrame{
+		Data: []byte{
+			0x0a, // Sequence Header OBU header (type=1, hasSize=0)
+			0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, // 8 bytes dummy seq header
+			0x30, // Frame OBU header (type=6, hasSize=0)
+		},
+		FrameType: FrameTypeKey,
+		Timestamp: 90000,
+	}
+	// Add 200 bytes of frame data
+	for i := 0; i < 200; i++ {
+		frame.Data = append(frame.Data, byte(i))
+	}
+
+	packets, err := pkt.Packetize(frame)
+	if err != nil {
+		t.Fatalf("Packetize failed: %v", err)
+	}
+
+	if len(packets) == 0 {
+		t.Fatal("No packets produced")
+	}
+
+	// Verify packet structure
+	for i, p := range packets {
+		if p.Header.SSRC != 12345 {
+			t.Errorf("Packet %d: SSRC = %d, want 12345", i, p.Header.SSRC)
+		}
+		if p.Header.PayloadType != 97 {
+			t.Errorf("Packet %d: PayloadType = %d, want 97", i, p.Header.PayloadType)
+		}
+		// Last packet should have marker bit
+		if i == len(packets)-1 && !p.Header.Marker {
+			t.Errorf("Last packet should have marker bit set")
+		}
+	}
+
+	t.Logf("Packetized %d bytes into %d packets", len(frame.Data), len(packets))
+}
+
+func TestAV1Depacketizer(t *testing.T) {
+	// Create test packets with RFC 9000 format
+	// Using W=1: 2 OBU elements (first has length, second doesn't)
+
+	depacketizer := NewAV1Depacketizer()
+
+	// Build a single RTP packet with AV1 payload
+	// Aggregation header: 0x18 = Z=0, Y=0, W=1 (2 elements), N=1 (keyframe)
+	aggHeader := byte(0x18)
+
+	// Sequence Header OBU with proper structure
+	seqHeaderOBU := []byte{
+		0x0a, // OBU header: type=1, hasSize=0
+		0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // 7 bytes payload (simplified)
+	}
+
+	// Frame OBU: 0x30 (type=6, hasSize=0) + payload
+	frameOBU := []byte{0x30}
+	for i := 0; i < 100; i++ {
+		frameOBU = append(frameOBU, byte(i))
+	}
+
+	// Build RTP payload per RFC 9000:
+	// [aggHeader][LEB128 length of seqHeader][seqHeader OBU][frameOBU (no length)]
+	payload := []byte{aggHeader}
+	payload = append(payload, byte(len(seqHeaderOBU))) // LEB128 length = 8
+	payload = append(payload, seqHeaderOBU...)
+	payload = append(payload, frameOBU...) // No length for last element
+
+	pkt := &rtp.Packet{
+		Header: rtp.Header{
+			Version:        2,
+			PayloadType:    97,
+			SequenceNumber: 1000,
+			Timestamp:      90000,
+			SSRC:           12345,
+			Marker:         true, // Frame complete
+		},
+		Payload: payload,
+	}
+
+	frame, err := depacketizer.Depacketize(pkt)
+	if err != nil {
+		t.Fatalf("Depacketize failed: %v", err)
+	}
+
+	if frame == nil {
+		t.Fatal("No frame returned")
+	}
+
+	if frame.Timestamp != 90000 {
+		t.Errorf("Timestamp = %d, want 90000", frame.Timestamp)
+	}
+
+	if frame.FrameType != FrameTypeKey {
+		t.Errorf("FrameType = %v, want FrameTypeKey", frame.FrameType)
+	}
+
+	// The normalized frame should have Temporal Delimiter + OBUs
+	if len(frame.Data) < 4 {
+		t.Fatalf("Frame data too short: %d bytes", len(frame.Data))
+	}
+
+	// First 2 bytes should be Temporal Delimiter (0x12, 0x00)
+	if frame.Data[0] != 0x12 || frame.Data[1] != 0x00 {
+		t.Errorf("Missing Temporal Delimiter: got %02x %02x, want 12 00", frame.Data[0], frame.Data[1])
+	}
+
+	t.Logf("Depacketized to %d bytes, frame type: %v", len(frame.Data), frame.FrameType)
+}
+
+func TestAV1DepacketizerMultiPacket(t *testing.T) {
+	// Test depacketization across multiple RTP packets
+	depacketizer := NewAV1Depacketizer()
+
+	// First packet: Sequence Header OBU
+	// Aggregation header: 0x48 = Z=0, Y=1 (continues), W=0, N=1
+	payload1 := []byte{0x48}
+	seqHeader := []byte{0x0a, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00}
+	payload1 = append(payload1, seqHeader...)
+
+	pkt1 := &rtp.Packet{
+		Header: rtp.Header{
+			Version:        2,
+			PayloadType:    97,
+			SequenceNumber: 1000,
+			Timestamp:      90000,
+			SSRC:           12345,
+			Marker:         false, // Not complete yet
+		},
+		Payload: payload1,
+	}
+
+	frame, err := depacketizer.Depacketize(pkt1)
+	if err != nil {
+		t.Fatalf("Depacketize pkt1 failed: %v", err)
+	}
+	if frame != nil {
+		t.Error("Frame should be nil for incomplete packet")
+	}
+
+	// Second packet: Frame OBU (continuation)
+	// Aggregation header: 0x80 = Z=1 (continuation), Y=0, W=0, N=0
+	payload2 := []byte{0x00} // Z=0, Y=0, W=0, N=0 (delta frame part)
+	frameData := []byte{0x30} // Frame OBU header
+	for i := 0; i < 50; i++ {
+		frameData = append(frameData, byte(i))
+	}
+	payload2 = append(payload2, frameData...)
+
+	pkt2 := &rtp.Packet{
+		Header: rtp.Header{
+			Version:        2,
+			PayloadType:    97,
+			SequenceNumber: 1001,
+			Timestamp:      90000, // Same timestamp = same frame
+			SSRC:           12345,
+			Marker:         true, // Frame complete
+		},
+		Payload: payload2,
+	}
+
+	frame, err = depacketizer.Depacketize(pkt2)
+	if err != nil {
+		t.Fatalf("Depacketize pkt2 failed: %v", err)
+	}
+
+	if frame == nil {
+		t.Fatal("No frame returned after complete packets")
+	}
+
+	t.Logf("Multi-packet depacketization: %d bytes", len(frame.Data))
+}
+
 func BenchmarkVP8Packetize(b *testing.B) {
 	pkt, _ := NewVP8Packetizer(12345, 96, 1200)
 

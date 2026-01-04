@@ -1,15 +1,15 @@
 //go:build (darwin || linux) && cgo
 
-// Package media provides video compositing via libstream_compositor using CGO.
+// Package media provides video compositing via libmedia_compositor using CGO.
 
 package media
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/clib
-#cgo darwin LDFLAGS: -L${SRCDIR}/build -lstream_compositor -Wl,-rpath,${SRCDIR}/build
-#cgo linux LDFLAGS: -L${SRCDIR}/build -lstream_compositor -Wl,-rpath,${SRCDIR}/build
+#cgo darwin LDFLAGS: -L${SRCDIR}/build -lmedia_compositor -Wl,-rpath,${SRCDIR}/build
+#cgo linux LDFLAGS: -L${SRCDIR}/build -lmedia_compositor -Wl,-rpath,${SRCDIR}/build
 
-#include "stream_compositor.h"
+#include "media_compositor.h"
 #include <stdlib.h>
 */
 import "C"
@@ -19,7 +19,7 @@ import (
 	"unsafe"
 )
 
-// IsCompositorAvailable checks if libstream_compositor is available.
+// IsCompositorAvailable checks if libmedia_compositor is available.
 // With CGO this is always true since it links at compile time.
 func IsCompositorAvailable() bool {
 	return true
@@ -27,7 +27,7 @@ func IsCompositorAvailable() bool {
 
 // compositorCreate creates a new compositor instance.
 func compositorCreate(width, height int) (uintptr, error) {
-	handle := C.stream_compositor_create(C.int32_t(width), C.int32_t(height))
+	handle := C.media_compositor_create(C.int32_t(width), C.int32_t(height))
 	if handle == nil {
 		return 0, errors.New("failed to create compositor")
 	}
@@ -37,15 +37,15 @@ func compositorCreate(width, height int) (uintptr, error) {
 // compositorDestroy destroys a compositor instance.
 func compositorDestroy(handle uintptr) {
 	if handle != 0 {
-		C.stream_compositor_destroy((*C.StreamCompositor)(unsafe.Pointer(handle)))
+		C.media_compositor_destroy((*C.MediaCompositor)(unsafe.Pointer(handle)))
 	}
 }
 
 // compositorClear clears the canvas with a solid YUV color.
 func compositorClear(handle uintptr, y, u, v byte) {
 	if handle != 0 {
-		C.stream_compositor_clear(
-			(*C.StreamCompositor)(unsafe.Pointer(handle)),
+		C.media_compositor_clear(
+			(*C.MediaCompositor)(unsafe.Pointer(handle)),
 			C.uint8_t(y), C.uint8_t(u), C.uint8_t(v),
 		)
 	}
@@ -66,7 +66,7 @@ func compositorBlendLayer(
 	}
 
 	// Create layer config
-	var config C.StreamLayerConfig
+	var config C.MediaLayerConfig
 	config.x = C.int32_t(x)
 	config.y = C.int32_t(y)
 	config.width = C.int32_t(width)
@@ -78,7 +78,7 @@ func compositorBlendLayer(
 	} else {
 		config.visible = 0
 	}
-	config.blend_mode = C.StreamBlendMode(blendMode)
+	config.blend_mode = C.MediaBlendMode(blendMode)
 
 	// Get pointers to data
 	var srcYPtr, srcUPtr, srcVPtr, srcAPtr *C.uint8_t
@@ -95,8 +95,8 @@ func compositorBlendLayer(
 		srcAPtr = (*C.uint8_t)(unsafe.Pointer(&srcA[0]))
 	}
 
-	C.stream_compositor_blend_layer(
-		(*C.StreamCompositor)(unsafe.Pointer(handle)),
+	C.media_compositor_blend_layer(
+		(*C.MediaCompositor)(unsafe.Pointer(handle)),
 		srcYPtr, srcUPtr, srcVPtr, srcAPtr,
 		C.int32_t(srcW), C.int32_t(srcH),
 		C.int32_t(srcStrideY), C.int32_t(srcStrideUV),
@@ -111,11 +111,11 @@ func compositorGetResult(handle uintptr) (y, u, v []byte, strideY, strideUV int)
 		return nil, nil, nil, 0, 0
 	}
 
-	comp := (*C.StreamCompositor)(unsafe.Pointer(handle))
+	comp := (*C.MediaCompositor)(unsafe.Pointer(handle))
 
 	// Get canvas dimensions
 	var width, height C.int32_t
-	C.stream_compositor_get_size(comp, &width, &height)
+	C.media_compositor_get_size(comp, &width, &height)
 	if width <= 0 || height <= 0 {
 		return nil, nil, nil, 0, 0
 	}
@@ -123,7 +123,7 @@ func compositorGetResult(handle uintptr) (y, u, v []byte, strideY, strideUV int)
 	// Get result pointers
 	var outY, outU, outV *C.uint8_t
 	var outStrideY, outStrideUV C.int32_t
-	C.stream_compositor_get_result(comp, &outY, &outU, &outV, &outStrideY, &outStrideUV)
+	C.media_compositor_get_result(comp, &outY, &outU, &outV, &outStrideY, &outStrideUV)
 
 	if outY == nil || outU == nil || outV == nil {
 		return nil, nil, nil, 0, 0

@@ -1,6 +1,6 @@
 //go:build (darwin || linux) && !noav1 && !cgo
 
-// Package media provides AV1 codec support via libstream_av1 using purego.
+// Package media provides AV1 codec support via libmedia_av1 using purego.
 
 package media
 
@@ -18,83 +18,83 @@ import (
 )
 
 var (
-	streamAV1Once    sync.Once
-	streamAV1Handle  uintptr
-	streamAV1InitErr error
-	streamAV1Loaded  bool
+	mediaAV1Once    sync.Once
+	mediaAV1Handle  uintptr
+	mediaAV1InitErr error
+	mediaAV1Loaded  bool
 )
 
-// libstream_av1 function pointers
+// libmedia_av1 function pointers
 var (
-	streamAV1EncoderCreate        func(width, height, fps, bitrateKbps, usage, threads int32) uint64
-	streamAV1EncoderCreateSVC     func(width, height, fps, bitrateKbps, usage, threads, temporalLayers, spatialLayers int32) uint64
-	streamAV1EncoderEncode        func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts uintptr) int32
-	streamAV1EncoderEncodeSVC     func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts, outTemporalLayer, outSpatialLayer uintptr) int32
-	streamAV1EncoderMaxOutputSize func(encoder uint64) int32
-	streamAV1EncoderRequestKF     func(encoder uint64)
-	streamAV1EncoderSetBitrate    func(encoder uint64, bitrateKbps int32) int32
-	streamAV1EncoderSetTemporal   func(encoder uint64, layers int32) int32
-	streamAV1EncoderSetSpatial    func(encoder uint64, layers int32) int32
-	streamAV1EncoderGetSVCConfig  func(encoder uint64, temporalLayers, spatialLayers, svcEnabled uintptr)
-	streamAV1EncoderGetStats      func(encoder uint64, framesEncoded, keyframesEncoded, bytesEncoded uintptr)
-	streamAV1EncoderDestroy       func(encoder uint64)
+	mediaAV1EncoderCreate        func(width, height, fps, bitrateKbps, usage, threads int32) uint64
+	mediaAV1EncoderCreateSVC     func(width, height, fps, bitrateKbps, usage, threads, temporalLayers, spatialLayers int32) uint64
+	mediaAV1EncoderEncode        func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts uintptr) int32
+	mediaAV1EncoderEncodeSVC     func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts, outTemporalLayer, outSpatialLayer uintptr) int32
+	mediaAV1EncoderMaxOutputSize func(encoder uint64) int32
+	mediaAV1EncoderRequestKF     func(encoder uint64)
+	mediaAV1EncoderSetBitrate    func(encoder uint64, bitrateKbps int32) int32
+	mediaAV1EncoderSetTemporal   func(encoder uint64, layers int32) int32
+	mediaAV1EncoderSetSpatial    func(encoder uint64, layers int32) int32
+	mediaAV1EncoderGetSVCConfig  func(encoder uint64, temporalLayers, spatialLayers, svcEnabled uintptr)
+	mediaAV1EncoderGetStats      func(encoder uint64, framesEncoded, keyframesEncoded, bytesEncoded uintptr)
+	mediaAV1EncoderDestroy       func(encoder uint64)
 
-	streamAV1DecoderCreate        func(threads int32) uint64
-	streamAV1DecoderDecode        func(decoder uint64, data uintptr, dataLen int32, outY, outU, outV, outYStride, outUVStride, outWidth, outHeight uintptr) int32
-	streamAV1DecoderGetDimensions func(decoder uint64, width, height uintptr)
-	streamAV1DecoderGetStats      func(decoder uint64, framesDecoded, keyframesDecoded, bytesDecoded, corruptedFrames uintptr)
-	streamAV1DecoderReset         func(decoder uint64) int32
-	streamAV1DecoderDestroy       func(decoder uint64)
+	mediaAV1DecoderCreate        func(threads int32) uint64
+	mediaAV1DecoderDecode        func(decoder uint64, data uintptr, dataLen int32, outY, outU, outV, outYStride, outUVStride, outWidth, outHeight uintptr) int32
+	mediaAV1DecoderGetDimensions func(decoder uint64, width, height uintptr)
+	mediaAV1DecoderGetStats      func(decoder uint64, framesDecoded, keyframesDecoded, bytesDecoded, corruptedFrames uintptr)
+	mediaAV1DecoderReset         func(decoder uint64) int32
+	mediaAV1DecoderDestroy       func(decoder uint64)
 
-	streamAV1GetError         func() uintptr
-	streamAV1EncoderAvailable func() int32
-	streamAV1DecoderAvailable func() int32
+	mediaAV1GetError         func() uintptr
+	mediaAV1EncoderAvailable func() int32
+	mediaAV1DecoderAvailable func() int32
 )
 
-// Constants from stream_av1.h
+// Constants from media_av1.h
 const (
-	streamAV1FrameKey       = 0
-	streamAV1FrameInter     = 1
-	streamAV1FrameIntraOnly = 2
-	streamAV1FrameSwitch    = 3
+	mediaAV1FrameKey       = 0
+	mediaAV1FrameInter     = 1
+	mediaAV1FrameIntraOnly = 2
+	mediaAV1FrameSwitch    = 3
 
-	streamAV1UsageRealtime    = 1
-	streamAV1UsageGoodQuality = 0
+	mediaAV1UsageRealtime    = 1
+	mediaAV1UsageGoodQuality = 0
 
-	streamAV1OK           = 0
-	streamAV1Error        = -1
-	streamAV1ErrorNoMem   = -2
-	streamAV1ErrorInvalid = -3
-	streamAV1ErrorCodec   = -4
+	mediaAV1OK           = 0
+	mediaAV1Error        = -1
+	mediaAV1ErrorNoMem   = -2
+	mediaAV1ErrorInvalid = -3
+	mediaAV1ErrorCodec   = -4
 )
 
 // AV1Usage defines the encoding usage preset
 type AV1Usage int
 
 const (
-	AV1UsageRealtime    AV1Usage = streamAV1UsageRealtime
-	AV1UsageGoodQuality AV1Usage = streamAV1UsageGoodQuality
+	AV1UsageRealtime    AV1Usage = mediaAV1UsageRealtime
+	AV1UsageGoodQuality AV1Usage = mediaAV1UsageGoodQuality
 )
 
-func loadStreamAV1() error {
-	streamAV1Once.Do(func() {
-		streamAV1InitErr = loadStreamAV1Lib()
-		if streamAV1InitErr == nil {
-			streamAV1Loaded = true
+func loadMediaAV1() error {
+	mediaAV1Once.Do(func() {
+		mediaAV1InitErr = loadMediaAV1Lib()
+		if mediaAV1InitErr == nil {
+			mediaAV1Loaded = true
 		}
 	})
-	return streamAV1InitErr
+	return mediaAV1InitErr
 }
 
-func loadStreamAV1Lib() error {
-	paths := getStreamAV1LibPaths()
+func loadMediaAV1Lib() error {
+	paths := getMediaAV1LibPaths()
 
 	var lastErr error
 	for _, path := range paths {
 		handle, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
 		if err == nil {
-			streamAV1Handle = handle
-			if err := loadStreamAV1Symbols(); err != nil {
+			mediaAV1Handle = handle
+			if err := loadMediaAV1Symbols(); err != nil {
 				purego.Dlclose(handle)
 				lastErr = err
 				continue
@@ -105,24 +105,24 @@ func loadStreamAV1Lib() error {
 	}
 
 	if lastErr != nil {
-		return fmt.Errorf("failed to load libstream_av1: %w", lastErr)
+		return fmt.Errorf("failed to load libmedia_av1: %w", lastErr)
 	}
-	return errors.New("libstream_av1 not found in any standard location")
+	return errors.New("libmedia_av1 not found in any standard location")
 }
 
-func getStreamAV1LibPaths() []string {
+func getMediaAV1LibPaths() []string {
 	var paths []string
 
-	libName := "libstream_av1.so"
+	libName := "libmedia_av1.so"
 	if runtime.GOOS == "darwin" {
-		libName = "libstream_av1.dylib"
+		libName = "libmedia_av1.dylib"
 	}
 
 	// Environment variable overrides (highest priority)
-	if envPath := os.Getenv("STREAM_AV1_LIB_PATH"); envPath != "" {
+	if envPath := os.Getenv("MEDIA_AV1_LIB_PATH"); envPath != "" {
 		paths = append(paths, envPath)
 	}
-	if envPath := os.Getenv("STREAM_SDK_LIB_PATH"); envPath != "" {
+	if envPath := os.Getenv("MEDIA_SDK_LIB_PATH"); envPath != "" {
 		paths = append(paths, filepath.Join(envPath, libName))
 	}
 
@@ -186,55 +186,55 @@ func getStreamAV1LibPaths() []string {
 	switch runtime.GOOS {
 	case "darwin":
 		paths = append(paths,
-			"libstream_av1.dylib",
-			"/usr/local/lib/libstream_av1.dylib",
-			"/opt/homebrew/lib/libstream_av1.dylib",
+			"libmedia_av1.dylib",
+			"/usr/local/lib/libmedia_av1.dylib",
+			"/opt/homebrew/lib/libmedia_av1.dylib",
 		)
 	case "linux":
 		paths = append(paths,
-			"libstream_av1.so",
-			"/usr/local/lib/libstream_av1.so",
-			"/usr/lib/libstream_av1.so",
+			"libmedia_av1.so",
+			"/usr/local/lib/libmedia_av1.so",
+			"/usr/lib/libmedia_av1.so",
 		)
 	}
 
 	return paths
 }
 
-func loadStreamAV1Symbols() error {
-	purego.RegisterLibFunc(&streamAV1EncoderCreate, streamAV1Handle, "stream_av1_encoder_create")
-	purego.RegisterLibFunc(&streamAV1EncoderCreateSVC, streamAV1Handle, "stream_av1_encoder_create_svc")
-	purego.RegisterLibFunc(&streamAV1EncoderEncode, streamAV1Handle, "stream_av1_encoder_encode")
-	purego.RegisterLibFunc(&streamAV1EncoderEncodeSVC, streamAV1Handle, "stream_av1_encoder_encode_svc")
-	purego.RegisterLibFunc(&streamAV1EncoderMaxOutputSize, streamAV1Handle, "stream_av1_encoder_max_output_size")
-	purego.RegisterLibFunc(&streamAV1EncoderRequestKF, streamAV1Handle, "stream_av1_encoder_request_keyframe")
-	purego.RegisterLibFunc(&streamAV1EncoderSetBitrate, streamAV1Handle, "stream_av1_encoder_set_bitrate")
-	purego.RegisterLibFunc(&streamAV1EncoderSetTemporal, streamAV1Handle, "stream_av1_encoder_set_temporal_layers")
-	purego.RegisterLibFunc(&streamAV1EncoderSetSpatial, streamAV1Handle, "stream_av1_encoder_set_spatial_layers")
-	purego.RegisterLibFunc(&streamAV1EncoderGetSVCConfig, streamAV1Handle, "stream_av1_encoder_get_svc_config")
-	purego.RegisterLibFunc(&streamAV1EncoderGetStats, streamAV1Handle, "stream_av1_encoder_get_stats")
-	purego.RegisterLibFunc(&streamAV1EncoderDestroy, streamAV1Handle, "stream_av1_encoder_destroy")
+func loadMediaAV1Symbols() error {
+	purego.RegisterLibFunc(&mediaAV1EncoderCreate, mediaAV1Handle, "media_av1_encoder_create")
+	purego.RegisterLibFunc(&mediaAV1EncoderCreateSVC, mediaAV1Handle, "media_av1_encoder_create_svc")
+	purego.RegisterLibFunc(&mediaAV1EncoderEncode, mediaAV1Handle, "media_av1_encoder_encode")
+	purego.RegisterLibFunc(&mediaAV1EncoderEncodeSVC, mediaAV1Handle, "media_av1_encoder_encode_svc")
+	purego.RegisterLibFunc(&mediaAV1EncoderMaxOutputSize, mediaAV1Handle, "media_av1_encoder_max_output_size")
+	purego.RegisterLibFunc(&mediaAV1EncoderRequestKF, mediaAV1Handle, "media_av1_encoder_request_keyframe")
+	purego.RegisterLibFunc(&mediaAV1EncoderSetBitrate, mediaAV1Handle, "media_av1_encoder_set_bitrate")
+	purego.RegisterLibFunc(&mediaAV1EncoderSetTemporal, mediaAV1Handle, "media_av1_encoder_set_temporal_layers")
+	purego.RegisterLibFunc(&mediaAV1EncoderSetSpatial, mediaAV1Handle, "media_av1_encoder_set_spatial_layers")
+	purego.RegisterLibFunc(&mediaAV1EncoderGetSVCConfig, mediaAV1Handle, "media_av1_encoder_get_svc_config")
+	purego.RegisterLibFunc(&mediaAV1EncoderGetStats, mediaAV1Handle, "media_av1_encoder_get_stats")
+	purego.RegisterLibFunc(&mediaAV1EncoderDestroy, mediaAV1Handle, "media_av1_encoder_destroy")
 
-	purego.RegisterLibFunc(&streamAV1DecoderCreate, streamAV1Handle, "stream_av1_decoder_create")
-	purego.RegisterLibFunc(&streamAV1DecoderDecode, streamAV1Handle, "stream_av1_decoder_decode")
-	purego.RegisterLibFunc(&streamAV1DecoderGetDimensions, streamAV1Handle, "stream_av1_decoder_get_dimensions")
-	purego.RegisterLibFunc(&streamAV1DecoderGetStats, streamAV1Handle, "stream_av1_decoder_get_stats")
-	purego.RegisterLibFunc(&streamAV1DecoderReset, streamAV1Handle, "stream_av1_decoder_reset")
-	purego.RegisterLibFunc(&streamAV1DecoderDestroy, streamAV1Handle, "stream_av1_decoder_destroy")
+	purego.RegisterLibFunc(&mediaAV1DecoderCreate, mediaAV1Handle, "media_av1_decoder_create")
+	purego.RegisterLibFunc(&mediaAV1DecoderDecode, mediaAV1Handle, "media_av1_decoder_decode")
+	purego.RegisterLibFunc(&mediaAV1DecoderGetDimensions, mediaAV1Handle, "media_av1_decoder_get_dimensions")
+	purego.RegisterLibFunc(&mediaAV1DecoderGetStats, mediaAV1Handle, "media_av1_decoder_get_stats")
+	purego.RegisterLibFunc(&mediaAV1DecoderReset, mediaAV1Handle, "media_av1_decoder_reset")
+	purego.RegisterLibFunc(&mediaAV1DecoderDestroy, mediaAV1Handle, "media_av1_decoder_destroy")
 
-	purego.RegisterLibFunc(&streamAV1GetError, streamAV1Handle, "stream_av1_get_error")
-	purego.RegisterLibFunc(&streamAV1EncoderAvailable, streamAV1Handle, "stream_av1_encoder_available")
-	purego.RegisterLibFunc(&streamAV1DecoderAvailable, streamAV1Handle, "stream_av1_decoder_available")
+	purego.RegisterLibFunc(&mediaAV1GetError, mediaAV1Handle, "media_av1_get_error")
+	purego.RegisterLibFunc(&mediaAV1EncoderAvailable, mediaAV1Handle, "media_av1_encoder_available")
+	purego.RegisterLibFunc(&mediaAV1DecoderAvailable, mediaAV1Handle, "media_av1_decoder_available")
 
 	return nil
 }
 
-// IsAV1Available checks if libstream_av1 is available.
+// IsAV1Available checks if libmedia_av1 is available.
 func IsAV1Available() bool {
-	if err := loadStreamAV1(); err != nil {
+	if err := loadMediaAV1(); err != nil {
 		return false
 	}
-	return streamAV1Loaded
+	return mediaAV1Loaded
 }
 
 // IsAV1EncoderAvailable checks if AV1 encoder is available.
@@ -242,7 +242,7 @@ func IsAV1EncoderAvailable() bool {
 	if !IsAV1Available() {
 		return false
 	}
-	return streamAV1EncoderAvailable() != 0
+	return mediaAV1EncoderAvailable() != 0
 }
 
 // IsAV1DecoderAvailable checks if AV1 decoder is available.
@@ -250,11 +250,11 @@ func IsAV1DecoderAvailable() bool {
 	if !IsAV1Available() {
 		return false
 	}
-	return streamAV1DecoderAvailable() != 0
+	return mediaAV1DecoderAvailable() != 0
 }
 
 func getAV1Error() string {
-	ptr := streamAV1GetError()
+	ptr := mediaAV1GetError()
 	if ptr == 0 {
 		return "unknown error"
 	}
@@ -282,11 +282,11 @@ type AV1Encoder struct {
 
 // NewAV1Encoder creates a new AV1 encoder.
 func NewAV1Encoder(config VideoEncoderConfig) (*AV1Encoder, error) {
-	if err := loadStreamAV1(); err != nil {
+	if err := loadMediaAV1(); err != nil {
 		return nil, fmt.Errorf("AV1 encoder not available: %w", err)
 	}
 
-	if streamAV1EncoderAvailable() == 0 {
+	if mediaAV1EncoderAvailable() == 0 {
 		return nil, errors.New("AV1 encoder not available (libaom not compiled)")
 	}
 
@@ -319,7 +319,7 @@ func NewAV1Encoder(config VideoEncoderConfig) (*AV1Encoder, error) {
 	svcEnabled := temporalLayers > 1 || spatialLayers > 1
 
 	if svcEnabled {
-		handle = streamAV1EncoderCreateSVC(
+		handle = mediaAV1EncoderCreateSVC(
 			int32(config.Width),
 			int32(config.Height),
 			int32(fps),
@@ -330,7 +330,7 @@ func NewAV1Encoder(config VideoEncoderConfig) (*AV1Encoder, error) {
 			int32(spatialLayers),
 		)
 	} else {
-		handle = streamAV1EncoderCreate(
+		handle = mediaAV1EncoderCreate(
 			int32(config.Width),
 			int32(config.Height),
 			int32(fps),
@@ -344,7 +344,7 @@ func NewAV1Encoder(config VideoEncoderConfig) (*AV1Encoder, error) {
 		return nil, fmt.Errorf("failed to create AV1 encoder: %s", getAV1Error())
 	}
 
-	maxOutput := streamAV1EncoderMaxOutputSize(handle)
+	maxOutput := mediaAV1EncoderMaxOutputSize(handle)
 	if maxOutput <= 0 {
 		maxOutput = int32(config.Width * config.Height * 3 / 2)
 	}
@@ -383,7 +383,7 @@ func (e *AV1Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	var result int32
 
 	if e.svcEnabled {
-		result = streamAV1EncoderEncodeSVC(
+		result = mediaAV1EncoderEncodeSVC(
 			e.handle,
 			uintptr(unsafe.Pointer(&frame.Data[0][0])),
 			uintptr(unsafe.Pointer(&frame.Data[1][0])),
@@ -399,7 +399,7 @@ func (e *AV1Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 			uintptr(unsafe.Pointer(&spatialLayer)),
 		)
 	} else {
-		result = streamAV1EncoderEncode(
+		result = mediaAV1EncoderEncode(
 			e.handle,
 			uintptr(unsafe.Pointer(&frame.Data[0][0])),
 			uintptr(unsafe.Pointer(&frame.Data[1][0])),
@@ -426,7 +426,7 @@ func (e *AV1Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	copy(data, e.outputBuf[:result])
 
 	ft := FrameTypeDelta
-	if frameType == streamAV1FrameKey {
+	if frameType == mediaAV1FrameKey {
 		ft = FrameTypeKey
 	}
 
@@ -458,7 +458,7 @@ func (e *AV1Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 func (e *AV1Encoder) RequestKeyframe() {
 	e.keyframeReq.Store(true)
 	if e.handle != 0 {
-		streamAV1EncoderRequestKF(e.handle)
+		mediaAV1EncoderRequestKF(e.handle)
 	}
 }
 
@@ -472,7 +472,7 @@ func (e *AV1Encoder) SetBitrate(bitrateBps int) error {
 	}
 
 	bitrateKbps := int32(bitrateBps / 1000)
-	if streamAV1EncoderSetBitrate(e.handle, bitrateKbps) != streamAV1OK {
+	if mediaAV1EncoderSetBitrate(e.handle, bitrateKbps) != mediaAV1OK {
 		return fmt.Errorf("failed to set bitrate: %s", getAV1Error())
 	}
 
@@ -489,11 +489,11 @@ func (e *AV1Encoder) SetSVCLayers(temporalLayers, spatialLayers int) error {
 		return fmt.Errorf("encoder not initialized")
 	}
 
-	if streamAV1EncoderSetTemporal(e.handle, int32(temporalLayers)) != streamAV1OK {
+	if mediaAV1EncoderSetTemporal(e.handle, int32(temporalLayers)) != mediaAV1OK {
 		return fmt.Errorf("failed to set temporal layers: %s", getAV1Error())
 	}
 
-	if streamAV1EncoderSetSpatial(e.handle, int32(spatialLayers)) != streamAV1OK {
+	if mediaAV1EncoderSetSpatial(e.handle, int32(spatialLayers)) != mediaAV1OK {
 		return fmt.Errorf("failed to set spatial layers: %s", getAV1Error())
 	}
 
@@ -515,7 +515,7 @@ func (e *AV1Encoder) GetSVCConfig() (temporalLayers, spatialLayers int, svcEnabl
 	}
 
 	var tempLayers, spatLayers, enabled int32
-	streamAV1EncoderGetSVCConfig(e.handle,
+	mediaAV1EncoderGetSVCConfig(e.handle,
 		uintptr(unsafe.Pointer(&tempLayers)),
 		uintptr(unsafe.Pointer(&spatLayers)),
 		uintptr(unsafe.Pointer(&enabled)),
@@ -552,7 +552,7 @@ func (e *AV1Encoder) Close() error {
 	defer e.mu.Unlock()
 
 	if e.handle != 0 {
-		streamAV1EncoderDestroy(e.handle)
+		mediaAV1EncoderDestroy(e.handle)
 		e.handle = 0
 	}
 
@@ -575,11 +575,11 @@ type AV1Decoder struct {
 
 // NewAV1Decoder creates a new AV1 decoder.
 func NewAV1Decoder(config VideoDecoderConfig) (*AV1Decoder, error) {
-	if err := loadStreamAV1(); err != nil {
+	if err := loadMediaAV1(); err != nil {
 		return nil, fmt.Errorf("AV1 decoder not available: %w", err)
 	}
 
-	if streamAV1DecoderAvailable() == 0 {
+	if mediaAV1DecoderAvailable() == 0 {
 		return nil, errors.New("AV1 decoder not available (libaom not compiled)")
 	}
 
@@ -588,7 +588,7 @@ func NewAV1Decoder(config VideoDecoderConfig) (*AV1Decoder, error) {
 		threads = int32(config.Threads)
 	}
 
-	handle := streamAV1DecoderCreate(threads)
+	handle := mediaAV1DecoderCreate(threads)
 	if handle == 0 {
 		return nil, fmt.Errorf("failed to create AV1 decoder: %s", getAV1Error())
 	}
@@ -611,7 +611,7 @@ func (d *AV1Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 	var outY, outU, outV uintptr
 	var outYStride, outUVStride, outWidth, outHeight int32
 
-	result := streamAV1DecoderDecode(
+	result := mediaAV1DecoderDecode(
 		d.handle,
 		uintptr(unsafe.Pointer(&encoded.Data[0])),
 		int32(len(encoded.Data)),
@@ -718,7 +718,7 @@ func (d *AV1Decoder) Reset() error {
 		return fmt.Errorf("decoder not initialized")
 	}
 
-	if streamAV1DecoderReset(d.handle) != streamAV1OK {
+	if mediaAV1DecoderReset(d.handle) != mediaAV1OK {
 		return fmt.Errorf("failed to reset decoder: %s", getAV1Error())
 	}
 
@@ -732,7 +732,7 @@ func (d *AV1Decoder) GetDimensions() (width, height int) {
 
 	if d.handle != 0 {
 		var w, h int32
-		streamAV1DecoderGetDimensions(d.handle, uintptr(unsafe.Pointer(&w)), uintptr(unsafe.Pointer(&h)))
+		mediaAV1DecoderGetDimensions(d.handle, uintptr(unsafe.Pointer(&w)), uintptr(unsafe.Pointer(&h)))
 		return int(w), int(h)
 	}
 	return d.width, d.height
@@ -744,7 +744,7 @@ func (d *AV1Decoder) Close() error {
 	defer d.mu.Unlock()
 
 	if d.handle != 0 {
-		streamAV1DecoderDestroy(d.handle)
+		mediaAV1DecoderDestroy(d.handle)
 		d.handle = 0
 	}
 

@@ -1,15 +1,15 @@
 //go:build (darwin || linux) && !noh264 && cgo
 
-// Package media provides H.264 codec support via libstream_h264 using CGO.
+// Package media provides H.264 codec support via libmedia_h264 using CGO.
 
 package media
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/clib
-#cgo darwin LDFLAGS: -L${SRCDIR}/build -lstream_h264 -Wl,-rpath,${SRCDIR}/build
-#cgo linux LDFLAGS: -L${SRCDIR}/build -lstream_h264 -Wl,-rpath,${SRCDIR}/build
+#cgo darwin LDFLAGS: -L${SRCDIR}/build -lmedia_h264 -Wl,-rpath,${SRCDIR}/build
+#cgo linux LDFLAGS: -L${SRCDIR}/build -lmedia_h264 -Wl,-rpath,${SRCDIR}/build
 
-#include "stream_h264.h"
+#include "media_h264.h"
 #include <stdlib.h>
 */
 import "C"
@@ -22,25 +22,25 @@ import (
 	"unsafe"
 )
 
-// Constants from stream_h264.h
+// Constants from media_h264.h
 const (
-	streamH264ProfileBaseline = C.STREAM_H264_PROFILE_BASELINE
-	streamH264ProfileMain     = C.STREAM_H264_PROFILE_MAIN
-	streamH264ProfileHigh     = C.STREAM_H264_PROFILE_HIGH
+	streamH264ProfileBaseline = C.MEDIA_H264_PROFILE_BASELINE
+	streamH264ProfileMain     = C.MEDIA_H264_PROFILE_MAIN
+	streamH264ProfileHigh     = C.MEDIA_H264_PROFILE_HIGH
 
-	streamH264FrameI   = C.STREAM_H264_FRAME_I
-	streamH264FrameP   = C.STREAM_H264_FRAME_P
-	streamH264FrameB   = C.STREAM_H264_FRAME_B
-	streamH264FrameIDR = C.STREAM_H264_FRAME_IDR
+	streamH264FrameI   = C.MEDIA_H264_FRAME_I
+	streamH264FrameP   = C.MEDIA_H264_FRAME_P
+	streamH264FrameB   = C.MEDIA_H264_FRAME_B
+	streamH264FrameIDR = C.MEDIA_H264_FRAME_IDR
 
-	streamH264OK           = C.STREAM_H264_OK
-	streamH264Error        = C.STREAM_H264_ERROR
-	streamH264ErrorNoMem   = C.STREAM_H264_ERROR_NOMEM
-	streamH264ErrorInvalid = C.STREAM_H264_ERROR_INVALID
-	streamH264ErrorCodec   = C.STREAM_H264_ERROR_CODEC
+	streamH264OK           = C.MEDIA_H264_OK
+	streamH264Error        = C.MEDIA_H264_ERROR
+	streamH264ErrorNoMem   = C.MEDIA_H264_ERROR_NOMEM
+	streamH264ErrorInvalid = C.MEDIA_H264_ERROR_INVALID
+	streamH264ErrorCodec   = C.MEDIA_H264_ERROR_CODEC
 )
 
-// h264ProfileToStream converts H264Profile to stream_h264 profile constant.
+// h264ProfileToStream converts H264Profile to media_h264 profile constant.
 func h264ProfileToStream(p H264Profile) C.int {
 	switch p {
 	case H264ProfileMain:
@@ -52,23 +52,23 @@ func h264ProfileToStream(p H264Profile) C.int {
 	}
 }
 
-// IsH264Available checks if libstream_h264 is available.
+// IsH264Available checks if libmedia_h264 is available.
 func IsH264Available() bool {
 	return true
 }
 
 // IsH264EncoderAvailable checks if H.264 encoder is available.
 func IsH264EncoderAvailable() bool {
-	return C.stream_h264_encoder_available() != 0
+	return C.media_h264_encoder_available() != 0
 }
 
 // IsH264DecoderAvailable checks if H.264 decoder is available.
 func IsH264DecoderAvailable() bool {
-	return C.stream_h264_decoder_available() != 0
+	return C.media_h264_decoder_available() != 0
 }
 
 func getH264Error() string {
-	cstr := C.stream_h264_get_error()
+	cstr := C.media_h264_get_error()
 	if cstr == nil {
 		return "unknown error"
 	}
@@ -79,7 +79,7 @@ func getH264Error() string {
 type H264Encoder struct {
 	config VideoEncoderConfig
 
-	handle    C.stream_h264_encoder_t
+	handle    C.media_h264_encoder_t
 	outputBuf []byte
 	profile   H264Profile
 
@@ -95,7 +95,7 @@ type H264Encoder struct {
 
 // NewH264Encoder creates a new H.264 encoder.
 func NewH264Encoder(config VideoEncoderConfig) (*H264Encoder, error) {
-	if C.stream_h264_encoder_available() == 0 {
+	if C.media_h264_encoder_available() == 0 {
 		return nil, errors.New("H.264 encoder not available (x264 not compiled)")
 	}
 
@@ -119,7 +119,7 @@ func NewH264Encoder(config VideoEncoderConfig) (*H264Encoder, error) {
 		fps = 30
 	}
 
-	handle := C.stream_h264_encoder_create(
+	handle := C.media_h264_encoder_create(
 		C.int(config.Width),
 		C.int(config.Height),
 		C.int(fps),
@@ -132,7 +132,7 @@ func NewH264Encoder(config VideoEncoderConfig) (*H264Encoder, error) {
 		return nil, fmt.Errorf("failed to create H.264 encoder: %s", getH264Error())
 	}
 
-	maxOutput := C.stream_h264_encoder_max_output_size(handle)
+	maxOutput := C.media_h264_encoder_max_output_size(handle)
 	if maxOutput <= 0 {
 		maxOutput = C.int(config.Width * config.Height * 3 / 2)
 	}
@@ -155,7 +155,7 @@ func (e *H264Encoder) extractSPSPPS() {
 	ppsOut := make([]byte, 256)
 	var spsLen, ppsLen C.int
 
-	C.stream_h264_encoder_get_sps_pps(
+	C.media_h264_encoder_get_sps_pps(
 		e.handle,
 		(*C.uint8_t)(unsafe.Pointer(&spsOut[0])), 256, &spsLen,
 		(*C.uint8_t)(unsafe.Pointer(&ppsOut[0])), 256, &ppsLen,
@@ -219,7 +219,7 @@ func (e *H264Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	var frameType C.int
 	var pts, dts C.int64_t
 
-	result := C.stream_h264_encoder_encode(
+	result := C.media_h264_encoder_encode(
 		e.handle,
 		(*C.uint8_t)(unsafe.Pointer(&frame.Data[0][0])),
 		(*C.uint8_t)(unsafe.Pointer(&frame.Data[1][0])),
@@ -276,7 +276,7 @@ func (e *H264Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 func (e *H264Encoder) RequestKeyframe() {
 	e.keyframeReq.Store(true)
 	if e.handle != 0 {
-		C.stream_h264_encoder_request_keyframe(e.handle)
+		C.media_h264_encoder_request_keyframe(e.handle)
 	}
 }
 
@@ -289,7 +289,7 @@ func (e *H264Encoder) SetBitrate(bitrateBps int) error {
 		return fmt.Errorf("encoder not initialized")
 	}
 
-	if C.stream_h264_encoder_set_bitrate(e.handle, C.int(bitrateBps/1000)) != streamH264OK {
+	if C.media_h264_encoder_set_bitrate(e.handle, C.int(bitrateBps/1000)) != streamH264OK {
 		return fmt.Errorf("failed to set bitrate: %s", getH264Error())
 	}
 
@@ -312,7 +312,7 @@ func (e *H264Encoder) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.handle != 0 {
-		C.stream_h264_encoder_destroy(e.handle)
+		C.media_h264_encoder_destroy(e.handle)
 		e.handle = 0
 	}
 	return nil
@@ -321,7 +321,7 @@ func (e *H264Encoder) Close() error {
 // H264Decoder implements VideoDecoder for H.264.
 type H264Decoder struct {
 	config    VideoDecoderConfig
-	handle    C.stream_h264_decoder_t
+	handle    C.media_h264_decoder_t
 	outputBuf *VideoFrameBuffer
 	width     int
 	height    int
@@ -332,7 +332,7 @@ type H264Decoder struct {
 
 // NewH264Decoder creates a new H.264 decoder.
 func NewH264Decoder(config VideoDecoderConfig) (*H264Decoder, error) {
-	if C.stream_h264_decoder_available() == 0 {
+	if C.media_h264_decoder_available() == 0 {
 		return nil, errors.New("H.264 decoder not available")
 	}
 
@@ -341,7 +341,7 @@ func NewH264Decoder(config VideoDecoderConfig) (*H264Decoder, error) {
 		threads = C.int(config.Threads)
 	}
 
-	handle := C.stream_h264_decoder_create(threads)
+	handle := C.media_h264_decoder_create(threads)
 	if handle == 0 {
 		return nil, fmt.Errorf("failed to create H.264 decoder: %s", getH264Error())
 	}
@@ -363,7 +363,7 @@ func (d *H264Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 	var outY, outU, outV *C.uint8_t
 	var outYStride, outUVStride, outWidth, outHeight C.int
 
-	result := C.stream_h264_decoder_decode(
+	result := C.media_h264_decoder_decode(
 		d.handle,
 		(*C.uint8_t)(unsafe.Pointer(&encoded.Data[0])),
 		C.int(len(encoded.Data)),
@@ -442,7 +442,7 @@ func (d *H264Decoder) Reset() error {
 	if d.handle == 0 {
 		return fmt.Errorf("decoder not initialized")
 	}
-	if C.stream_h264_decoder_reset(d.handle) != streamH264OK {
+	if C.media_h264_decoder_reset(d.handle) != streamH264OK {
 		return fmt.Errorf("failed to reset decoder: %s", getH264Error())
 	}
 	return nil
@@ -453,7 +453,7 @@ func (d *H264Decoder) GetDimensions() (width, height int) {
 	defer d.mu.Unlock()
 	if d.handle != 0 {
 		var w, h C.int
-		C.stream_h264_decoder_get_dimensions(d.handle, &w, &h)
+		C.media_h264_decoder_get_dimensions(d.handle, &w, &h)
 		return int(w), int(h)
 	}
 	return d.width, d.height
@@ -463,7 +463,7 @@ func (d *H264Decoder) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.handle != 0 {
-		C.stream_h264_decoder_destroy(d.handle)
+		C.media_h264_decoder_destroy(d.handle)
 		d.handle = 0
 	}
 	return nil

@@ -1,4 +1,4 @@
-//go:build darwin && !nodevices
+//go:build darwin && !nodevices && !cgo
 
 package media
 

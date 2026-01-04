@@ -1,7 +1,7 @@
-// stream_h264.c - x264/OpenH264 wrapper implementation
+// media_h264.c - x264/OpenH264 wrapper implementation
 // Thin wrapper around x264 for H.264 encoding and OpenH264 for decoding
 
-#include "stream_h264.h"
+#include "media_h264.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -37,7 +37,7 @@ static void set_error(const char* fmt, ...) {
     va_end(args);
 }
 
-const char* stream_h264_get_error(void) {
+const char* media_h264_get_error(void) {
     return g_error_msg[0] ? g_error_msg : NULL;
 }
 
@@ -69,11 +69,11 @@ typedef struct {
     int pps_len;
 } encoder_state_t;
 
-int stream_h264_encoder_available(void) {
+int media_h264_encoder_available(void) {
     return 1;
 }
 
-stream_h264_encoder_t stream_h264_encoder_create(
+media_h264_encoder_t media_h264_encoder_create(
     int width,
     int height,
     int fps,
@@ -100,9 +100,9 @@ stream_h264_encoder_t stream_h264_encoder_create(
 
     // Set profile
     const char* profile_name = "baseline";
-    if (profile == STREAM_H264_PROFILE_MAIN) {
+    if (profile == MEDIA_H264_PROFILE_MAIN) {
         profile_name = "main";
-    } else if (profile == STREAM_H264_PROFILE_HIGH) {
+    } else if (profile == MEDIA_H264_PROFILE_HIGH) {
         profile_name = "high";
     }
 
@@ -179,11 +179,11 @@ stream_h264_encoder_t stream_h264_encoder_create(
         }
     }
 
-    return (stream_h264_encoder_t)(uintptr_t)state;
+    return (media_h264_encoder_t)(uintptr_t)state;
 }
 
-int stream_h264_encoder_encode(
-    stream_h264_encoder_t encoder,
+int media_h264_encoder_encode(
+    media_h264_encoder_t encoder,
     const uint8_t* y_plane,
     const uint8_t* u_plane,
     const uint8_t* v_plane,
@@ -199,7 +199,7 @@ int stream_h264_encoder_encode(
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (!state || !state->encoder) {
         set_error("Invalid encoder handle");
-        return STREAM_H264_ERROR_INVALID;
+        return MEDIA_H264_ERROR_INVALID;
     }
 
     // Copy input planes
@@ -230,7 +230,7 @@ int stream_h264_encoder_encode(
 
     if (frame_size < 0) {
         set_error("x264 encode failed");
-        return STREAM_H264_ERROR_CODEC;
+        return MEDIA_H264_ERROR_CODEC;
     }
 
     if (frame_size == 0) {
@@ -242,7 +242,7 @@ int stream_h264_encoder_encode(
     for (int i = 0; i < num_nals; i++) {
         if (total_size + nals[i].i_payload > out_capacity) {
             set_error("Output buffer too small");
-            return STREAM_H264_ERROR_NOMEM;
+            return MEDIA_H264_ERROR_NOMEM;
         }
         memcpy(out_data + total_size, nals[i].p_payload, nals[i].i_payload);
         total_size += nals[i].i_payload;
@@ -251,13 +251,13 @@ int stream_h264_encoder_encode(
     // Determine frame type
     if (out_frame_type) {
         if (state->pic_out.b_keyframe) {
-            *out_frame_type = STREAM_H264_FRAME_IDR;
+            *out_frame_type = MEDIA_H264_FRAME_IDR;
         } else if (state->pic_out.i_type == X264_TYPE_P) {
-            *out_frame_type = STREAM_H264_FRAME_P;
+            *out_frame_type = MEDIA_H264_FRAME_P;
         } else if (state->pic_out.i_type == X264_TYPE_B) {
-            *out_frame_type = STREAM_H264_FRAME_B;
+            *out_frame_type = MEDIA_H264_FRAME_B;
         } else {
-            *out_frame_type = STREAM_H264_FRAME_I;
+            *out_frame_type = MEDIA_H264_FRAME_I;
         }
     }
 
@@ -274,24 +274,24 @@ int stream_h264_encoder_encode(
     return total_size;
 }
 
-int stream_h264_encoder_max_output_size(stream_h264_encoder_t encoder) {
+int media_h264_encoder_max_output_size(media_h264_encoder_t encoder) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (!state) return 0;
     // Worst case: raw I420 frame
     return state->width * state->height * 3 / 2;
 }
 
-void stream_h264_encoder_request_keyframe(stream_h264_encoder_t encoder) {
+void media_h264_encoder_request_keyframe(media_h264_encoder_t encoder) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (state) {
         state->force_idr = 1;
     }
 }
 
-int stream_h264_encoder_set_bitrate(stream_h264_encoder_t encoder, int bitrate_kbps) {
+int media_h264_encoder_set_bitrate(media_h264_encoder_t encoder, int bitrate_kbps) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (!state || !state->encoder) {
-        return STREAM_H264_ERROR_INVALID;
+        return MEDIA_H264_ERROR_INVALID;
     }
 
     x264_param_t param;
@@ -301,14 +301,14 @@ int stream_h264_encoder_set_bitrate(stream_h264_encoder_t encoder, int bitrate_k
 
     if (x264_encoder_reconfig(state->encoder, &param) < 0) {
         set_error("Failed to reconfigure bitrate");
-        return STREAM_H264_ERROR_CODEC;
+        return MEDIA_H264_ERROR_CODEC;
     }
 
-    return STREAM_H264_OK;
+    return MEDIA_H264_OK;
 }
 
-int stream_h264_encoder_get_sps_pps(
-    stream_h264_encoder_t encoder,
+int media_h264_encoder_get_sps_pps(
+    media_h264_encoder_t encoder,
     uint8_t* sps_out,
     int sps_capacity,
     int* sps_len,
@@ -318,7 +318,7 @@ int stream_h264_encoder_get_sps_pps(
 ) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (!state) {
-        return STREAM_H264_ERROR_INVALID;
+        return MEDIA_H264_ERROR_INVALID;
     }
 
     if (state->sps && sps_out && state->sps_len <= sps_capacity) {
@@ -331,11 +331,11 @@ int stream_h264_encoder_get_sps_pps(
         if (pps_len) *pps_len = state->pps_len;
     }
 
-    return STREAM_H264_OK;
+    return MEDIA_H264_OK;
 }
 
-void stream_h264_encoder_get_stats(
-    stream_h264_encoder_t encoder,
+void media_h264_encoder_get_stats(
+    media_h264_encoder_t encoder,
     uint64_t* frames_encoded,
     uint64_t* keyframes_encoded,
     uint64_t* bytes_encoded
@@ -348,7 +348,7 @@ void stream_h264_encoder_get_stats(
     if (bytes_encoded) *bytes_encoded = state->bytes_encoded;
 }
 
-void stream_h264_encoder_destroy(stream_h264_encoder_t encoder) {
+void media_h264_encoder_destroy(media_h264_encoder_t encoder) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (!state) return;
 
@@ -364,19 +364,19 @@ void stream_h264_encoder_destroy(stream_h264_encoder_t encoder) {
 
 #else // !HAS_X264
 
-int stream_h264_encoder_available(void) { return 0; }
-stream_h264_encoder_t stream_h264_encoder_create(int w, int h, int fps, int br, int prof, int thr) {
+int media_h264_encoder_available(void) { return 0; }
+media_h264_encoder_t media_h264_encoder_create(int w, int h, int fps, int br, int prof, int thr) {
     set_error("x264 not available");
     return 0;
 }
-int stream_h264_encoder_encode(stream_h264_encoder_t e, const uint8_t* y, const uint8_t* u, const uint8_t* v,
-    int ys, int uvs, int fk, uint8_t* out, int oc, int* ft, int64_t* pts, int64_t* dts) { return STREAM_H264_ERROR; }
-int stream_h264_encoder_max_output_size(stream_h264_encoder_t e) { return 0; }
-void stream_h264_encoder_request_keyframe(stream_h264_encoder_t e) {}
-int stream_h264_encoder_set_bitrate(stream_h264_encoder_t e, int br) { return STREAM_H264_ERROR; }
-int stream_h264_encoder_get_sps_pps(stream_h264_encoder_t e, uint8_t* s, int sc, int* sl, uint8_t* p, int pc, int* pl) { return STREAM_H264_ERROR; }
-void stream_h264_encoder_get_stats(stream_h264_encoder_t e, uint64_t* f, uint64_t* k, uint64_t* b) {}
-void stream_h264_encoder_destroy(stream_h264_encoder_t e) {}
+int media_h264_encoder_encode(media_h264_encoder_t e, const uint8_t* y, const uint8_t* u, const uint8_t* v,
+    int ys, int uvs, int fk, uint8_t* out, int oc, int* ft, int64_t* pts, int64_t* dts) { return MEDIA_H264_ERROR; }
+int media_h264_encoder_max_output_size(media_h264_encoder_t e) { return 0; }
+void media_h264_encoder_request_keyframe(media_h264_encoder_t e) {}
+int media_h264_encoder_set_bitrate(media_h264_encoder_t e, int br) { return MEDIA_H264_ERROR; }
+int media_h264_encoder_get_sps_pps(media_h264_encoder_t e, uint8_t* s, int sc, int* sl, uint8_t* p, int pc, int* pl) { return MEDIA_H264_ERROR; }
+void media_h264_encoder_get_stats(media_h264_encoder_t e, uint64_t* f, uint64_t* k, uint64_t* b) {}
+void media_h264_encoder_destroy(media_h264_encoder_t e) {}
 
 #endif // HAS_X264
 
@@ -421,7 +421,7 @@ typedef struct {
 // OpenH264 SVideoProperty (matches codec_app_def.h)
 typedef struct {
     unsigned int size;          // size of the struct
-    int eVideoBsType;           // VIDEO_BITSTREAM_TYPE: 0=AVC, 1=SVC
+    int eVideoBsType;           // VIDEO_BITMEDIA_TYPE: 0=AVC, 1=SVC
 } OH264VideoProperty;
 
 // OpenH264 SDecodingParam (matches codec_app_def.h TagSVCDecodingParam)
@@ -518,11 +518,11 @@ typedef struct {
     uint64_t corrupted_frames;
 } decoder_state_t;
 
-int stream_h264_decoder_available(void) {
+int media_h264_decoder_available(void) {
     return load_openh264();
 }
 
-stream_h264_decoder_t stream_h264_decoder_create(int threads) {
+media_h264_decoder_t media_h264_decoder_create(int threads) {
     if (!load_openh264()) {
         set_error("OpenH264 library not found");
         return 0;
@@ -549,7 +549,7 @@ stream_h264_decoder_t stream_h264_decoder_create(int threads) {
     param.eEcActiveIdc = 2;        // ERROR_CON_SLICE_COPY
     param.bParseOnly = 0;          // false = do reconstruction
     param.sVideoProperty.size = sizeof(OH264VideoProperty);
-    param.sVideoProperty.eVideoBsType = 0;  // VIDEO_BITSTREAM_AVC = 0 (not 1 which is SVC)
+    param.sVideoProperty.eVideoBsType = 0;  // VIDEO_BITMEDIA_AVC = 0 (not 1 which is SVC)
 
     if ((*state->decoder)->Initialize(state->decoder, &param) != 0) {
         set_error("Failed to initialize OpenH264 decoder");
@@ -564,11 +564,11 @@ stream_h264_decoder_t stream_h264_decoder_create(int threads) {
         (*state->decoder)->SetOption(state->decoder, 6, &threadCount);  // DECODER_OPTION_NUM_OF_THREADS = 6
     }
 
-    return (stream_h264_decoder_t)(uintptr_t)state;
+    return (media_h264_decoder_t)(uintptr_t)state;
 }
 
-int stream_h264_decoder_decode(
-    stream_h264_decoder_t decoder,
+int media_h264_decoder_decode(
+    media_h264_decoder_t decoder,
     const uint8_t* data,
     int len,
     const uint8_t** out_y,
@@ -582,12 +582,12 @@ int stream_h264_decoder_decode(
     decoder_state_t* state = (decoder_state_t*)(uintptr_t)decoder;
     if (!state || !state->decoder) {
         set_error("Invalid decoder handle");
-        return STREAM_H264_ERROR_INVALID;
+        return MEDIA_H264_ERROR_INVALID;
     }
 
     if (!data || len <= 0) {
         set_error("Invalid input data");
-        return STREAM_H264_ERROR_INVALID;
+        return MEDIA_H264_ERROR_INVALID;
     }
 
     // Decode frame
@@ -647,7 +647,7 @@ int stream_h264_decoder_decode(
     return 1;
 }
 
-void stream_h264_decoder_get_dimensions(stream_h264_decoder_t decoder, int* width, int* height) {
+void media_h264_decoder_get_dimensions(media_h264_decoder_t decoder, int* width, int* height) {
     decoder_state_t* state = (decoder_state_t*)(uintptr_t)decoder;
     if (!state) return;
 
@@ -655,8 +655,8 @@ void stream_h264_decoder_get_dimensions(stream_h264_decoder_t decoder, int* widt
     if (height) *height = state->height;
 }
 
-void stream_h264_decoder_get_stats(
-    stream_h264_decoder_t decoder,
+void media_h264_decoder_get_stats(
+    media_h264_decoder_t decoder,
     uint64_t* frames_decoded,
     uint64_t* keyframes_decoded,
     uint64_t* bytes_decoded,
@@ -671,10 +671,10 @@ void stream_h264_decoder_get_stats(
     if (corrupted_frames) *corrupted_frames = state->corrupted_frames;
 }
 
-int stream_h264_decoder_reset(stream_h264_decoder_t decoder) {
+int media_h264_decoder_reset(media_h264_decoder_t decoder) {
     decoder_state_t* state = (decoder_state_t*)(uintptr_t)decoder;
     if (!state || !state->decoder) {
-        return STREAM_H264_ERROR_INVALID;
+        return MEDIA_H264_ERROR_INVALID;
     }
 
     // Reinitialize decoder
@@ -685,12 +685,12 @@ int stream_h264_decoder_reset(stream_h264_decoder_t decoder) {
     param.eEcActiveIdc = 2;        // ERROR_CON_SLICE_COPY
     param.bParseOnly = 0;          // false = do reconstruction
     param.sVideoProperty.size = sizeof(OH264VideoProperty);
-    param.sVideoProperty.eVideoBsType = 0;  // VIDEO_BITSTREAM_AVC = 0 (not 1 which is SVC)
+    param.sVideoProperty.eVideoBsType = 0;  // VIDEO_BITMEDIA_AVC = 0 (not 1 which is SVC)
 
     (*state->decoder)->Uninitialize(state->decoder);
     if ((*state->decoder)->Initialize(state->decoder, &param) != 0) {
         set_error("Failed to reset decoder");
-        return STREAM_H264_ERROR_CODEC;
+        return MEDIA_H264_ERROR_CODEC;
     }
 
     state->width = 0;
@@ -699,10 +699,10 @@ int stream_h264_decoder_reset(stream_h264_decoder_t decoder) {
     state->u_plane = NULL;
     state->v_plane = NULL;
 
-    return STREAM_H264_OK;
+    return MEDIA_H264_OK;
 }
 
-void stream_h264_decoder_destroy(stream_h264_decoder_t decoder) {
+void media_h264_decoder_destroy(media_h264_decoder_t decoder) {
     decoder_state_t* state = (decoder_state_t*)(uintptr_t)decoder;
     if (!state) return;
 
@@ -717,16 +717,16 @@ void stream_h264_decoder_destroy(stream_h264_decoder_t decoder) {
 #else // !HAS_OPENH264
 
 // Decoder stubs when OpenH264 is not available
-int stream_h264_decoder_available(void) { return 0; }
-stream_h264_decoder_t stream_h264_decoder_create(int threads) {
+int media_h264_decoder_available(void) { return 0; }
+media_h264_decoder_t media_h264_decoder_create(int threads) {
     set_error("OpenH264 decoder not available - install openh264 and rebuild");
     return 0;
 }
-int stream_h264_decoder_decode(stream_h264_decoder_t d, const uint8_t* data, int len,
-    const uint8_t** y, const uint8_t** u, const uint8_t** v, int* ys, int* uvs, int* w, int* h) { return STREAM_H264_ERROR; }
-void stream_h264_decoder_get_dimensions(stream_h264_decoder_t d, int* w, int* h) {}
-void stream_h264_decoder_get_stats(stream_h264_decoder_t d, uint64_t* f, uint64_t* k, uint64_t* b, uint64_t* c) {}
-int stream_h264_decoder_reset(stream_h264_decoder_t d) { return STREAM_H264_ERROR; }
-void stream_h264_decoder_destroy(stream_h264_decoder_t d) {}
+int media_h264_decoder_decode(media_h264_decoder_t d, const uint8_t* data, int len,
+    const uint8_t** y, const uint8_t** u, const uint8_t** v, int* ys, int* uvs, int* w, int* h) { return MEDIA_H264_ERROR; }
+void media_h264_decoder_get_dimensions(media_h264_decoder_t d, int* w, int* h) {}
+void media_h264_decoder_get_stats(media_h264_decoder_t d, uint64_t* f, uint64_t* k, uint64_t* b, uint64_t* c) {}
+int media_h264_decoder_reset(media_h264_decoder_t d) { return MEDIA_H264_ERROR; }
+void media_h264_decoder_destroy(media_h264_decoder_t d) {}
 
 #endif // HAS_OPENH264

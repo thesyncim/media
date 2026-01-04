@@ -1,8 +1,8 @@
-// stream_vpx.c - Thin wrapper for libvpx
-// Compile: cc -shared -fPIC -O2 -o libstream_vpx.so stream_vpx.c -lvpx
-// macOS:   cc -shared -fPIC -O2 -o libstream_vpx.dylib stream_vpx.c -lvpx
+// media_vpx.c - Thin wrapper for libvpx
+// Compile: cc -shared -fPIC -O2 -o libmedia_vpx.so media_vpx.c -lvpx
+// macOS:   cc -shared -fPIC -O2 -o libmedia_vpx.dylib media_vpx.c -lvpx
 
-#include "stream_vpx.h"
+#include "media_vpx.h"
 #include <vpx/vpx_encoder.h>
 #include <vpx/vpx_decoder.h>
 #include <vpx/vp8cx.h>
@@ -54,7 +54,7 @@ typedef struct {
     int current_spatial_layer;
 } encoder_state_t;
 
-stream_vpx_encoder_t stream_vpx_encoder_create(
+media_vpx_encoder_t media_vpx_encoder_create(
     int codec,
     int width,
     int height,
@@ -71,10 +71,10 @@ stream_vpx_encoder_t stream_vpx_encoder_create(
     // Get codec interface
     vpx_codec_iface_t* iface = NULL;
     switch (codec) {
-        case STREAM_VPX_CODEC_VP8:
+        case MEDIA_VPX_CODEC_VP8:
             iface = vpx_codec_vp8_cx();
             break;
-        case STREAM_VPX_CODEC_VP9:
+        case MEDIA_VPX_CODEC_VP9:
             iface = vpx_codec_vp9_cx();
             break;
         default:
@@ -114,7 +114,7 @@ stream_vpx_encoder_t stream_vpx_encoder_create(
     vpx_codec_control(&enc->codec, VP8E_SET_CPUUSED, 6);
 
     // VP9-specific settings
-    if (codec == STREAM_VPX_CODEC_VP9) {
+    if (codec == MEDIA_VPX_CODEC_VP9) {
         vpx_codec_control(&enc->codec, VP9E_SET_ROW_MT, 1);
         int tile_columns = 0;
         if (width >= 1280) tile_columns = 2;
@@ -139,10 +139,10 @@ stream_vpx_encoder_t stream_vpx_encoder_create(
     enc->spatial_layers = 1;
     enc->svc_enabled = 0;
 
-    return (stream_vpx_encoder_t)(uintptr_t)enc;
+    return (media_vpx_encoder_t)(uintptr_t)enc;
 }
 
-stream_vpx_encoder_t stream_vpx_encoder_create_svc(
+media_vpx_encoder_t media_vpx_encoder_create_svc(
     int codec,
     int width,
     int height,
@@ -152,9 +152,9 @@ stream_vpx_encoder_t stream_vpx_encoder_create_svc(
     int temporal_layers,
     int spatial_layers
 ) {
-    if (codec != STREAM_VPX_CODEC_VP9) {
+    if (codec != MEDIA_VPX_CODEC_VP9) {
         // Only VP9 supports full SVC, VP8 has limited temporal layer support
-        if (codec == STREAM_VPX_CODEC_VP8 && temporal_layers > 1) {
+        if (codec == MEDIA_VPX_CODEC_VP8 && temporal_layers > 1) {
             set_error("VP8 only supports limited temporal layers");
         }
     }
@@ -167,10 +167,10 @@ stream_vpx_encoder_t stream_vpx_encoder_create_svc(
 
     vpx_codec_iface_t* iface = NULL;
     switch (codec) {
-        case STREAM_VPX_CODEC_VP8:
+        case MEDIA_VPX_CODEC_VP8:
             iface = vpx_codec_vp8_cx();
             break;
-        case STREAM_VPX_CODEC_VP9:
+        case MEDIA_VPX_CODEC_VP9:
             iface = vpx_codec_vp9_cx();
             break;
         default:
@@ -238,7 +238,7 @@ stream_vpx_encoder_t stream_vpx_encoder_create_svc(
     }
 
     // Configure spatial layers (VP9 only)
-    if (codec == STREAM_VPX_CODEC_VP9 && spatial_layers > 1 && spatial_layers <= 3) {
+    if (codec == MEDIA_VPX_CODEC_VP9 && spatial_layers > 1 && spatial_layers <= 3) {
         enc->cfg.ss_number_layers = spatial_layers;
         // Set spatial layer scaling - example: 0.5x, 0.75x, 1.0x
         switch (spatial_layers) {
@@ -266,7 +266,7 @@ stream_vpx_encoder_t stream_vpx_encoder_create_svc(
 
     vpx_codec_control(&enc->codec, VP8E_SET_CPUUSED, 6);
 
-    if (codec == STREAM_VPX_CODEC_VP9) {
+    if (codec == MEDIA_VPX_CODEC_VP9) {
         vpx_codec_control(&enc->codec, VP9E_SET_ROW_MT, 1);
         int tile_columns = 0;
         if (width >= 1280) tile_columns = 2;
@@ -292,11 +292,11 @@ stream_vpx_encoder_t stream_vpx_encoder_create_svc(
     enc->initialized = 1;
     enc->keyframe_requested = 1;
 
-    return (stream_vpx_encoder_t)(uintptr_t)enc;
+    return (media_vpx_encoder_t)(uintptr_t)enc;
 }
 
-int stream_vpx_encoder_encode(
-    stream_vpx_encoder_t encoder,
+int media_vpx_encoder_encode(
+    media_vpx_encoder_t encoder,
     const uint8_t* y_plane,
     const uint8_t* u_plane,
     const uint8_t* v_plane,
@@ -311,7 +311,7 @@ int stream_vpx_encoder_encode(
     encoder_state_t* enc = (encoder_state_t*)(uintptr_t)encoder;
     if (!enc || !enc->initialized) {
         set_error("invalid encoder handle");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     // Copy input planes to vpx image
@@ -348,7 +348,7 @@ int stream_vpx_encoder_encode(
     // Encode
     if (vpx_codec_encode(&enc->codec, &enc->raw, pts, 1, flags, VPX_DL_REALTIME) != VPX_CODEC_OK) {
         set_vpx_error(&enc->codec, "encode failed");
-        return STREAM_VPX_ERROR_CODEC;
+        return MEDIA_VPX_ERROR_CODEC;
     }
 
     // Collect output
@@ -361,7 +361,7 @@ int stream_vpx_encoder_encode(
         if (pkt->kind == VPX_CODEC_CX_FRAME_PKT) {
             if (total_size + (int)pkt->data.frame.sz > out_capacity) {
                 set_error("output buffer too small");
-                return STREAM_VPX_ERROR_NOMEM;
+                return MEDIA_VPX_ERROR_NOMEM;
             }
             memcpy(out_data + total_size, pkt->data.frame.buf, pkt->data.frame.sz);
             total_size += pkt->data.frame.sz;
@@ -378,14 +378,14 @@ int stream_vpx_encoder_encode(
         enc->bytes_encoded += total_size;
     }
 
-    if (out_frame_type) *out_frame_type = is_keyframe ? STREAM_VPX_FRAME_KEY : STREAM_VPX_FRAME_DELTA;
+    if (out_frame_type) *out_frame_type = is_keyframe ? MEDIA_VPX_FRAME_KEY : MEDIA_VPX_FRAME_DELTA;
     if (out_pts) *out_pts = pts;
 
     return total_size;
 }
 
-int stream_vpx_encoder_encode_svc(
-    stream_vpx_encoder_t encoder,
+int media_vpx_encoder_encode_svc(
+    media_vpx_encoder_t encoder,
     const uint8_t* y_plane,
     const uint8_t* u_plane,
     const uint8_t* v_plane,
@@ -402,7 +402,7 @@ int stream_vpx_encoder_encode_svc(
     encoder_state_t* enc = (encoder_state_t*)(uintptr_t)encoder;
     if (!enc || !enc->initialized) {
         set_error("invalid encoder handle");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     // Copy input planes
@@ -456,7 +456,7 @@ int stream_vpx_encoder_encode_svc(
 
     if (vpx_codec_encode(&enc->codec, &enc->raw, pts, 1, flags, VPX_DL_REALTIME) != VPX_CODEC_OK) {
         set_vpx_error(&enc->codec, "encode failed");
-        return STREAM_VPX_ERROR_CODEC;
+        return MEDIA_VPX_ERROR_CODEC;
     }
 
     int total_size = 0;
@@ -468,7 +468,7 @@ int stream_vpx_encoder_encode_svc(
         if (pkt->kind == VPX_CODEC_CX_FRAME_PKT) {
             if (total_size + (int)pkt->data.frame.sz > out_capacity) {
                 set_error("output buffer too small");
-                return STREAM_VPX_ERROR_NOMEM;
+                return MEDIA_VPX_ERROR_NOMEM;
             }
             memcpy(out_data + total_size, pkt->data.frame.buf, pkt->data.frame.sz);
             total_size += pkt->data.frame.sz;
@@ -485,7 +485,7 @@ int stream_vpx_encoder_encode_svc(
         enc->bytes_encoded += total_size;
     }
 
-    if (out_frame_type) *out_frame_type = is_keyframe ? STREAM_VPX_FRAME_KEY : STREAM_VPX_FRAME_DELTA;
+    if (out_frame_type) *out_frame_type = is_keyframe ? MEDIA_VPX_FRAME_KEY : MEDIA_VPX_FRAME_DELTA;
     if (out_pts) *out_pts = pts;
     if (out_temporal_layer) *out_temporal_layer = enc->current_temporal_layer;
     if (out_spatial_layer) *out_spatial_layer = enc->current_spatial_layer;
@@ -493,47 +493,47 @@ int stream_vpx_encoder_encode_svc(
     return total_size;
 }
 
-int stream_vpx_encoder_max_output_size(stream_vpx_encoder_t encoder) {
+int media_vpx_encoder_max_output_size(media_vpx_encoder_t encoder) {
     encoder_state_t* enc = (encoder_state_t*)(uintptr_t)encoder;
     if (!enc) return 0;
     // Conservative estimate: uncompressed frame size
     return enc->width * enc->height * 3 / 2;
 }
 
-void stream_vpx_encoder_request_keyframe(stream_vpx_encoder_t encoder) {
+void media_vpx_encoder_request_keyframe(media_vpx_encoder_t encoder) {
     encoder_state_t* enc = (encoder_state_t*)(uintptr_t)encoder;
     if (enc) enc->keyframe_requested = 1;
 }
 
-int stream_vpx_encoder_set_bitrate(stream_vpx_encoder_t encoder, int bitrate_kbps) {
+int media_vpx_encoder_set_bitrate(media_vpx_encoder_t encoder, int bitrate_kbps) {
     encoder_state_t* enc = (encoder_state_t*)(uintptr_t)encoder;
     if (!enc || !enc->initialized) {
         set_error("invalid encoder handle");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     enc->cfg.rc_target_bitrate = bitrate_kbps;
     if (vpx_codec_enc_config_set(&enc->codec, &enc->cfg) != VPX_CODEC_OK) {
         set_vpx_error(&enc->codec, "failed to set bitrate");
-        return STREAM_VPX_ERROR_CODEC;
+        return MEDIA_VPX_ERROR_CODEC;
     }
-    return STREAM_VPX_OK;
+    return MEDIA_VPX_OK;
 }
 
-int stream_vpx_encoder_set_temporal_layers(stream_vpx_encoder_t encoder, int layers) {
+int media_vpx_encoder_set_temporal_layers(media_vpx_encoder_t encoder, int layers) {
     encoder_state_t* enc = (encoder_state_t*)(uintptr_t)encoder;
     if (!enc || !enc->initialized) {
         set_error("invalid encoder handle");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     if (layers < 1 || layers > 4) {
         set_error("temporal layers must be 1-4");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     if (layers == enc->temporal_layers) {
-        return STREAM_VPX_OK; // No change needed
+        return MEDIA_VPX_OK; // No change needed
     }
 
     // Update temporal layer configuration
@@ -577,7 +577,7 @@ int stream_vpx_encoder_set_temporal_layers(stream_vpx_encoder_t encoder, int lay
 
     if (vpx_codec_enc_config_set(&enc->codec, &enc->cfg) != VPX_CODEC_OK) {
         set_vpx_error(&enc->codec, "failed to set temporal layers");
-        return STREAM_VPX_ERROR_CODEC;
+        return MEDIA_VPX_ERROR_CODEC;
     }
 
     enc->temporal_layers = layers;
@@ -586,28 +586,28 @@ int stream_vpx_encoder_set_temporal_layers(stream_vpx_encoder_t encoder, int lay
     // Request keyframe to apply changes cleanly
     enc->keyframe_requested = 1;
 
-    return STREAM_VPX_OK;
+    return MEDIA_VPX_OK;
 }
 
-int stream_vpx_encoder_set_spatial_layers(stream_vpx_encoder_t encoder, int layers) {
+int media_vpx_encoder_set_spatial_layers(media_vpx_encoder_t encoder, int layers) {
     encoder_state_t* enc = (encoder_state_t*)(uintptr_t)encoder;
     if (!enc || !enc->initialized) {
         set_error("invalid encoder handle");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
-    if (enc->codec_type != STREAM_VPX_CODEC_VP9) {
+    if (enc->codec_type != MEDIA_VPX_CODEC_VP9) {
         set_error("spatial layers only supported for VP9");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     if (layers < 1 || layers > 3) {
         set_error("spatial layers must be 1-3");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     if (layers == enc->spatial_layers) {
-        return STREAM_VPX_OK; // No change needed
+        return MEDIA_VPX_OK; // No change needed
     }
 
     // Update spatial layer configuration
@@ -630,7 +630,7 @@ int stream_vpx_encoder_set_spatial_layers(stream_vpx_encoder_t encoder, int laye
 
     if (vpx_codec_enc_config_set(&enc->codec, &enc->cfg) != VPX_CODEC_OK) {
         set_vpx_error(&enc->codec, "failed to set spatial layers");
-        return STREAM_VPX_ERROR_CODEC;
+        return MEDIA_VPX_ERROR_CODEC;
     }
 
     enc->spatial_layers = layers;
@@ -639,11 +639,11 @@ int stream_vpx_encoder_set_spatial_layers(stream_vpx_encoder_t encoder, int laye
     // Request keyframe to apply changes cleanly
     enc->keyframe_requested = 1;
 
-    return STREAM_VPX_OK;
+    return MEDIA_VPX_OK;
 }
 
-void stream_vpx_encoder_get_svc_config(
-    stream_vpx_encoder_t encoder,
+void media_vpx_encoder_get_svc_config(
+    media_vpx_encoder_t encoder,
     int* temporal_layers,
     int* spatial_layers,
     int* svc_enabled
@@ -655,8 +655,8 @@ void stream_vpx_encoder_get_svc_config(
     if (svc_enabled) *svc_enabled = enc->svc_enabled;
 }
 
-void stream_vpx_encoder_get_stats(
-    stream_vpx_encoder_t encoder,
+void media_vpx_encoder_get_stats(
+    media_vpx_encoder_t encoder,
     uint64_t* frames_encoded,
     uint64_t* keyframes_encoded,
     uint64_t* bytes_encoded
@@ -668,7 +668,7 @@ void stream_vpx_encoder_get_stats(
     if (bytes_encoded) *bytes_encoded = enc->bytes_encoded;
 }
 
-void stream_vpx_encoder_destroy(stream_vpx_encoder_t encoder) {
+void media_vpx_encoder_destroy(media_vpx_encoder_t encoder) {
     encoder_state_t* enc = (encoder_state_t*)(uintptr_t)encoder;
     if (!enc) return;
 
@@ -695,7 +695,7 @@ typedef struct {
     uint64_t corrupted_frames;
 } decoder_state_t;
 
-stream_vpx_decoder_t stream_vpx_decoder_create(int codec, int threads) {
+media_vpx_decoder_t media_vpx_decoder_create(int codec, int threads) {
     decoder_state_t* dec = (decoder_state_t*)calloc(1, sizeof(decoder_state_t));
     if (!dec) {
         set_error("failed to allocate decoder state");
@@ -704,10 +704,10 @@ stream_vpx_decoder_t stream_vpx_decoder_create(int codec, int threads) {
 
     vpx_codec_iface_t* iface = NULL;
     switch (codec) {
-        case STREAM_VPX_CODEC_VP8:
+        case MEDIA_VPX_CODEC_VP8:
             iface = vpx_codec_vp8_dx();
             break;
-        case STREAM_VPX_CODEC_VP9:
+        case MEDIA_VPX_CODEC_VP9:
             iface = vpx_codec_vp9_dx();
             break;
         default:
@@ -728,11 +728,11 @@ stream_vpx_decoder_t stream_vpx_decoder_create(int codec, int threads) {
     dec->codec_type = codec;
     dec->initialized = 1;
 
-    return (stream_vpx_decoder_t)(uintptr_t)dec;
+    return (media_vpx_decoder_t)(uintptr_t)dec;
 }
 
-int stream_vpx_decoder_decode(
-    stream_vpx_decoder_t decoder,
+int media_vpx_decoder_decode(
+    media_vpx_decoder_t decoder,
     const uint8_t* data,
     int data_len,
     const uint8_t** out_y,
@@ -746,13 +746,13 @@ int stream_vpx_decoder_decode(
     decoder_state_t* dec = (decoder_state_t*)(uintptr_t)decoder;
     if (!dec || !dec->initialized) {
         set_error("invalid decoder handle");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     if (vpx_codec_decode(&dec->codec, data, data_len, NULL, 0) != VPX_CODEC_OK) {
         dec->corrupted_frames++;
         set_vpx_error(&dec->codec, "decode failed");
-        return STREAM_VPX_ERROR_CODEC;
+        return MEDIA_VPX_ERROR_CODEC;
     }
 
     vpx_codec_iter_t iter = NULL;
@@ -777,8 +777,8 @@ int stream_vpx_decoder_decode(
     return 1;  // Frame decoded
 }
 
-void stream_vpx_decoder_get_dimensions(
-    stream_vpx_decoder_t decoder,
+void media_vpx_decoder_get_dimensions(
+    media_vpx_decoder_t decoder,
     int* width,
     int* height
 ) {
@@ -788,8 +788,8 @@ void stream_vpx_decoder_get_dimensions(
     if (height) *height = dec->height;
 }
 
-void stream_vpx_decoder_get_stats(
-    stream_vpx_decoder_t decoder,
+void media_vpx_decoder_get_stats(
+    media_vpx_decoder_t decoder,
     uint64_t* frames_decoded,
     uint64_t* keyframes_decoded,
     uint64_t* bytes_decoded,
@@ -803,15 +803,15 @@ void stream_vpx_decoder_get_stats(
     if (corrupted_frames) *corrupted_frames = dec->corrupted_frames;
 }
 
-int stream_vpx_decoder_reset(stream_vpx_decoder_t decoder) {
+int media_vpx_decoder_reset(media_vpx_decoder_t decoder) {
     decoder_state_t* dec = (decoder_state_t*)(uintptr_t)decoder;
     if (!dec || !dec->initialized) {
         set_error("invalid decoder handle");
-        return STREAM_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
     }
 
     // Destroy and recreate
-    vpx_codec_iface_t* iface = dec->codec_type == STREAM_VPX_CODEC_VP8
+    vpx_codec_iface_t* iface = dec->codec_type == MEDIA_VPX_CODEC_VP8
         ? vpx_codec_vp8_dx() : vpx_codec_vp9_dx();
 
     vpx_codec_destroy(&dec->codec);
@@ -822,13 +822,13 @@ int stream_vpx_decoder_reset(stream_vpx_decoder_t decoder) {
     if (vpx_codec_dec_init(&dec->codec, iface, &cfg, 0) != VPX_CODEC_OK) {
         set_vpx_error(&dec->codec, "failed to reset decoder");
         dec->initialized = 0;
-        return STREAM_VPX_ERROR_CODEC;
+        return MEDIA_VPX_ERROR_CODEC;
     }
 
-    return STREAM_VPX_OK;
+    return MEDIA_VPX_OK;
 }
 
-void stream_vpx_decoder_destroy(stream_vpx_decoder_t decoder) {
+void media_vpx_decoder_destroy(media_vpx_decoder_t decoder) {
     decoder_state_t* dec = (decoder_state_t*)(uintptr_t)decoder;
     if (!dec) return;
 
@@ -842,15 +842,15 @@ void stream_vpx_decoder_destroy(stream_vpx_decoder_t decoder) {
 // Utility
 // ============================================================================
 
-const char* stream_vpx_get_error(void) {
+const char* media_vpx_get_error(void) {
     return g_error_msg;
 }
 
-int stream_vpx_codec_available(int codec) {
+int media_vpx_codec_available(int codec) {
     switch (codec) {
-        case STREAM_VPX_CODEC_VP8:
+        case MEDIA_VPX_CODEC_VP8:
             return vpx_codec_vp8_cx() != NULL && vpx_codec_vp8_dx() != NULL;
-        case STREAM_VPX_CODEC_VP9:
+        case MEDIA_VPX_CODEC_VP9:
             return vpx_codec_vp9_cx() != NULL && vpx_codec_vp9_dx() != NULL;
         default:
             return 0;

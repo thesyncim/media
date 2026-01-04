@@ -1,16 +1,16 @@
-// stream_avfoundation.m - AVFoundation wrapper implementation
+// media_avfoundation.m - AVFoundation wrapper implementation
 //
 // Compile with:
 //   clang -shared -fPIC -O2 -fobjc-arc -framework AVFoundation -framework CoreMedia \
 //         -framework CoreVideo -framework Foundation \
-//         -o libstream_avfoundation.dylib stream_avfoundation.m
+//         -o libmedia_avfoundation.dylib media_avfoundation.m
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 #include <pthread.h>
-#include "stream_avfoundation.h"
+#include "media_avfoundation.h"
 
 static __thread char error_buffer[256] = {0};
 
@@ -21,7 +21,7 @@ static void set_error(const char* fmt, ...) {
     va_end(args);
 }
 
-const char* stream_av_get_error(void) {
+const char* media_av_get_error(void) {
     return error_buffer;
 }
 
@@ -56,7 +56,7 @@ static NSArray<AVCaptureDeviceType>* getAudioDeviceTypes(void) {
 }
 
 // Device enumeration
-int32_t stream_av_video_device_count(void) {
+int32_t media_av_video_device_count(void) {
     @autoreleasepool {
         if (@available(macOS 10.15, *)) {
             AVCaptureDeviceDiscoverySession* session = [AVCaptureDeviceDiscoverySession
@@ -69,7 +69,7 @@ int32_t stream_av_video_device_count(void) {
     }
 }
 
-int32_t stream_av_audio_input_device_count(void) {
+int32_t media_av_audio_input_device_count(void) {
     @autoreleasepool {
         if (@available(macOS 10.15, *)) {
             AVCaptureDeviceDiscoverySession* session = [AVCaptureDeviceDiscoverySession
@@ -82,7 +82,7 @@ int32_t stream_av_audio_input_device_count(void) {
     }
 }
 
-const char* stream_av_video_device_id(int32_t index) {
+const char* media_av_video_device_id(int32_t index) {
     @autoreleasepool {
         if (@available(macOS 10.15, *)) {
             AVCaptureDeviceDiscoverySession* session = [AVCaptureDeviceDiscoverySession
@@ -98,7 +98,7 @@ const char* stream_av_video_device_id(int32_t index) {
     }
 }
 
-const char* stream_av_video_device_label(int32_t index) {
+const char* media_av_video_device_label(int32_t index) {
     @autoreleasepool {
         if (@available(macOS 10.15, *)) {
             AVCaptureDeviceDiscoverySession* session = [AVCaptureDeviceDiscoverySession
@@ -114,7 +114,7 @@ const char* stream_av_video_device_label(int32_t index) {
     }
 }
 
-const char* stream_av_audio_input_device_id(int32_t index) {
+const char* media_av_audio_input_device_id(int32_t index) {
     @autoreleasepool {
         if (@available(macOS 10.15, *)) {
             AVCaptureDeviceDiscoverySession* session = [AVCaptureDeviceDiscoverySession
@@ -130,7 +130,7 @@ const char* stream_av_audio_input_device_id(int32_t index) {
     }
 }
 
-const char* stream_av_audio_input_device_label(int32_t index) {
+const char* media_av_audio_input_device_label(int32_t index) {
     @autoreleasepool {
         if (@available(macOS 10.15, *)) {
             AVCaptureDeviceDiscoverySession* session = [AVCaptureDeviceDiscoverySession
@@ -146,7 +146,7 @@ const char* stream_av_audio_input_device_label(int32_t index) {
     }
 }
 
-void stream_av_free_string(const char* str) {
+void media_av_free_string(const char* str) {
     if (str) {
         free((void*)str);
     }
@@ -165,19 +165,19 @@ static AVCaptureDevice* findVideoDevice(const char* device_id) {
     return device;
 }
 
-int32_t stream_av_video_device_fps_range(const char* device_id, int32_t* min_fps, int32_t* max_fps) {
+int32_t media_av_video_device_fps_range(const char* device_id, int32_t* min_fps, int32_t* max_fps) {
     @autoreleasepool {
         AVCaptureDevice* device = findVideoDevice(device_id);
         if (!device) {
             set_error("Video device not found");
-            return STREAM_AV_ERROR_NOTFOUND;
+            return MEDIA_AV_ERROR_NOTFOUND;
         }
 
         // Get the active format's supported frame rate ranges
         AVCaptureDeviceFormat* format = device.activeFormat;
         if (!format || format.videoSupportedFrameRateRanges.count == 0) {
             set_error("No supported frame rate ranges");
-            return STREAM_AV_ERROR;
+            return MEDIA_AV_ERROR;
         }
 
         // Find the overall min and max across all ranges
@@ -192,30 +192,30 @@ int32_t stream_av_video_device_fps_range(const char* device_id, int32_t* min_fps
         if (min_fps) *min_fps = (int32_t)overallMin;
         if (max_fps) *max_fps = (int32_t)overallMax;
 
-        return STREAM_AV_OK;
+        return MEDIA_AV_OK;
     }
 }
 
 // Permission handling
-int32_t stream_av_camera_permission_status(void) {
+int32_t media_av_camera_permission_status(void) {
     @autoreleasepool {
         if (@available(macOS 10.14, *)) {
             return (int32_t)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo];
         }
-        return STREAM_AV_AUTH_AUTHORIZED;
+        return MEDIA_AV_AUTH_AUTHORIZED;
     }
 }
 
-int32_t stream_av_microphone_permission_status(void) {
+int32_t media_av_microphone_permission_status(void) {
     @autoreleasepool {
         if (@available(macOS 10.14, *)) {
             return (int32_t)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
         }
-        return STREAM_AV_AUTH_AUTHORIZED;
+        return MEDIA_AV_AUTH_AUTHORIZED;
     }
 }
 
-void stream_av_request_camera_permission(void) {
+void media_av_request_camera_permission(void) {
     @autoreleasepool {
         if (@available(macOS 10.14, *)) {
             [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {}];
@@ -223,7 +223,7 @@ void stream_av_request_camera_permission(void) {
     }
 }
 
-void stream_av_request_microphone_permission(void) {
+void media_av_request_microphone_permission(void) {
     @autoreleasepool {
         if (@available(macOS 10.14, *)) {
             [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {}];
@@ -232,8 +232,8 @@ void stream_av_request_microphone_permission(void) {
 }
 
 // Video capture delegate
-@interface StreamVideoDelegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
-@property (nonatomic) StreamAVFrameCallback callback;
+@interface MediaVideoDelegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
+@property (nonatomic) MediaAVFrameCallback callback;
 @property (nonatomic) void* userData;
 @property (nonatomic) int32_t width;
 @property (nonatomic) int32_t height;
@@ -241,7 +241,7 @@ void stream_av_request_microphone_permission(void) {
 @property (nonatomic, strong) NSMutableData* vBuffer;
 @end
 
-@implementation StreamVideoDelegate
+@implementation MediaVideoDelegate
 
 - (void)captureOutput:(AVCaptureOutput *)output
     didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
@@ -309,28 +309,28 @@ void stream_av_request_microphone_permission(void) {
 @end
 
 // Video capture wrapper - stores ObjC objects using CFRetain/CFRelease
-@interface StreamVideoCaptureWrapper : NSObject
+@interface MediaVideoCaptureWrapper : NSObject
 @property (nonatomic, strong) AVCaptureSession* session;
 @property (nonatomic, strong) AVCaptureDeviceInput* input;
 @property (nonatomic, strong) AVCaptureVideoDataOutput* output;
-@property (nonatomic, strong) StreamVideoDelegate* delegate;
+@property (nonatomic, strong) MediaVideoDelegate* delegate;
 @property (nonatomic, strong) dispatch_queue_t queue;
 @end
 
-@implementation StreamVideoCaptureWrapper
+@implementation MediaVideoCaptureWrapper
 @end
 
-StreamAVVideoCapture stream_av_video_capture_create(
+MediaAVVideoCapture media_av_video_capture_create(
     const char* device_id,
     int32_t width,
     int32_t height,
     int32_t fps,
-    StreamAVFrameCallback callback,
+    MediaAVFrameCallback callback,
     void* user_data
 ) {
     @autoreleasepool {
         // Check permission
-        if (stream_av_camera_permission_status() != STREAM_AV_AUTH_AUTHORIZED) {
+        if (media_av_camera_permission_status() != MEDIA_AV_AUTH_AUTHORIZED) {
             set_error("Camera permission not granted");
             return 0;
         }
@@ -345,7 +345,7 @@ StreamAVVideoCapture stream_av_video_capture_create(
         NSError* error = nil;
 
         // Create wrapper to hold objects
-        StreamVideoCaptureWrapper* wrapper = [[StreamVideoCaptureWrapper alloc] init];
+        MediaVideoCaptureWrapper* wrapper = [[MediaVideoCaptureWrapper alloc] init];
 
         // Create session
         wrapper.session = [[AVCaptureSession alloc] init];
@@ -405,7 +405,7 @@ StreamAVVideoCapture stream_av_video_capture_create(
         wrapper.output.alwaysDiscardsLateVideoFrames = YES;
 
         // Create delegate
-        wrapper.delegate = [[StreamVideoDelegate alloc] init];
+        wrapper.delegate = [[MediaVideoDelegate alloc] init];
         wrapper.delegate.callback = callback;
         wrapper.delegate.userData = user_data;
         wrapper.delegate.width = width;
@@ -421,40 +421,40 @@ StreamAVVideoCapture stream_av_video_capture_create(
         [wrapper.session addOutput:wrapper.output];
 
         // Return retained wrapper as handle
-        return (StreamAVVideoCapture)CFBridgingRetain(wrapper);
+        return (MediaAVVideoCapture)CFBridgingRetain(wrapper);
     }
 }
 
-int32_t stream_av_video_capture_start(StreamAVVideoCapture handle) {
-    if (!handle) return STREAM_AV_ERROR;
+int32_t media_av_video_capture_start(MediaAVVideoCapture handle) {
+    if (!handle) return MEDIA_AV_ERROR;
 
     @autoreleasepool {
-        StreamVideoCaptureWrapper* wrapper = (__bridge StreamVideoCaptureWrapper*)(void*)handle;
+        MediaVideoCaptureWrapper* wrapper = (__bridge MediaVideoCaptureWrapper*)(void*)handle;
         if (!wrapper.session.isRunning) {
             [wrapper.session startRunning];
         }
-        return STREAM_AV_OK;
+        return MEDIA_AV_OK;
     }
 }
 
-int32_t stream_av_video_capture_stop(StreamAVVideoCapture handle) {
-    if (!handle) return STREAM_AV_ERROR;
+int32_t media_av_video_capture_stop(MediaAVVideoCapture handle) {
+    if (!handle) return MEDIA_AV_ERROR;
 
     @autoreleasepool {
-        StreamVideoCaptureWrapper* wrapper = (__bridge StreamVideoCaptureWrapper*)(void*)handle;
+        MediaVideoCaptureWrapper* wrapper = (__bridge MediaVideoCaptureWrapper*)(void*)handle;
         if (wrapper.session.isRunning) {
             [wrapper.session stopRunning];
         }
-        return STREAM_AV_OK;
+        return MEDIA_AV_OK;
     }
 }
 
-void stream_av_video_capture_destroy(StreamAVVideoCapture handle) {
+void media_av_video_capture_destroy(MediaAVVideoCapture handle) {
     if (!handle) return;
 
     @autoreleasepool {
         // Transfer ownership and let ARC release
-        StreamVideoCaptureWrapper* wrapper = (StreamVideoCaptureWrapper*)CFBridgingRelease((void*)handle);
+        MediaVideoCaptureWrapper* wrapper = (MediaVideoCaptureWrapper*)CFBridgingRelease((void*)handle);
         if (wrapper.session.isRunning) {
             [wrapper.session stopRunning];
         }
@@ -463,24 +463,24 @@ void stream_av_video_capture_destroy(StreamAVVideoCapture handle) {
 }
 
 // Audio capture stubs
-StreamAVAudioCapture stream_av_audio_capture_create(
+MediaAVAudioCapture media_av_audio_capture_create(
     const char* device_id,
     int32_t sample_rate,
     int32_t channels,
-    StreamAVAudioCallback callback,
+    MediaAVAudioCallback callback,
     void* user_data
 ) {
     set_error("Audio capture not yet implemented");
     return 0;
 }
 
-int32_t stream_av_audio_capture_start(StreamAVAudioCapture handle) {
-    return STREAM_AV_ERROR;
+int32_t media_av_audio_capture_start(MediaAVAudioCapture handle) {
+    return MEDIA_AV_ERROR;
 }
 
-int32_t stream_av_audio_capture_stop(StreamAVAudioCapture handle) {
-    return STREAM_AV_ERROR;
+int32_t media_av_audio_capture_stop(MediaAVAudioCapture handle) {
+    return MEDIA_AV_ERROR;
 }
 
-void stream_av_audio_capture_destroy(StreamAVAudioCapture handle) {
+void media_av_audio_capture_destroy(MediaAVAudioCapture handle) {
 }

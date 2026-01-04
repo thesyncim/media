@@ -1,7 +1,7 @@
-// stream_v4l2.c - V4L2 wrapper implementation for Linux
+// media_v4l2.c - V4L2 wrapper implementation for Linux
 //
 // Compile with:
-//   cc -shared -fPIC -O2 -o libstream_v4l2.so stream_v4l2.c -lpthread
+//   cc -shared -fPIC -O2 -o libmedia_v4l2.so media_v4l2.c -lpthread
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -19,7 +19,7 @@
 #include <time.h>
 #include <linux/videodev2.h>
 
-#include "stream_v4l2.h"
+#include "media_v4l2.h"
 
 // Thread-local error buffer
 static __thread char error_buffer[256] = {0};
@@ -31,7 +31,7 @@ static void set_error(const char* fmt, ...) {
     va_end(args);
 }
 
-const char* stream_v4l2_get_error(void) {
+const char* media_v4l2_get_error(void) {
     return error_buffer;
 }
 
@@ -105,7 +105,7 @@ typedef struct {
     Buffer* buffers;
     int buffer_count;
 
-    StreamV4L2FrameCallback callback;
+    MediaV4L2FrameCallback callback;
     void* user_data;
 
     pthread_t capture_thread;
@@ -136,7 +136,7 @@ static int is_video_device(const char* path) {
     return result;
 }
 
-int32_t stream_v4l2_device_count(void) {
+int32_t media_v4l2_device_count(void) {
     int count = 0;
 
     // Scan /dev/video* devices
@@ -175,7 +175,7 @@ static int find_device_index(int target_index, char* out_path, size_t path_size)
     return -1;
 }
 
-const char* stream_v4l2_device_path(int32_t index) {
+const char* media_v4l2_device_path(int32_t index) {
     char path[32];
     if (find_device_index(index, path, sizeof(path)) < 0) {
         return NULL;
@@ -183,7 +183,7 @@ const char* stream_v4l2_device_path(int32_t index) {
     return strdup(path);
 }
 
-const char* stream_v4l2_device_name(int32_t index) {
+const char* media_v4l2_device_name(int32_t index) {
     char path[32];
     if (find_device_index(index, path, sizeof(path)) < 0) {
         return NULL;
@@ -204,13 +204,13 @@ const char* stream_v4l2_device_name(int32_t index) {
     return strdup((const char*)cap.card);
 }
 
-StreamV4L2DeviceInfo* stream_v4l2_get_device_info(int32_t index) {
+MediaV4L2DeviceInfo* media_v4l2_get_device_info(int32_t index) {
     char path[32];
     if (find_device_index(index, path, sizeof(path)) < 0) {
         return NULL;
     }
 
-    StreamV4L2DeviceInfo* info = malloc(sizeof(StreamV4L2DeviceInfo));
+    MediaV4L2DeviceInfo* info = malloc(sizeof(MediaV4L2DeviceInfo));
     if (!info) return NULL;
 
     info->device_path = strdup(path);
@@ -232,7 +232,7 @@ StreamV4L2DeviceInfo* stream_v4l2_get_device_info(int32_t index) {
     return info;
 }
 
-void stream_v4l2_free_device_info(StreamV4L2DeviceInfo* info) {
+void media_v4l2_free_device_info(MediaV4L2DeviceInfo* info) {
     if (info) {
         free(info->device_path);
         free(info->name);
@@ -240,7 +240,7 @@ void stream_v4l2_free_device_info(StreamV4L2DeviceInfo* info) {
     }
 }
 
-void stream_v4l2_free_string(const char* str) {
+void media_v4l2_free_string(const char* str) {
     if (str) {
         free((void*)str);
     }
@@ -326,12 +326,12 @@ static void* capture_thread_func(void* arg) {
     return NULL;
 }
 
-StreamV4L2Capture stream_v4l2_capture_create(
+MediaV4L2Capture media_v4l2_capture_create(
     const char* device_path,
     int32_t width,
     int32_t height,
     int32_t fps,
-    StreamV4L2FrameCallback callback,
+    MediaV4L2FrameCallback callback,
     void* user_data
 ) {
     const char* path = device_path;
@@ -519,15 +519,15 @@ StreamV4L2Capture stream_v4l2_capture_create(
         }
     }
 
-    return (StreamV4L2Capture)ctx;
+    return (MediaV4L2Capture)ctx;
 }
 
-int32_t stream_v4l2_capture_start(StreamV4L2Capture handle) {
-    if (!handle) return STREAM_V4L2_ERROR;
+int32_t media_v4l2_capture_start(MediaV4L2Capture handle) {
+    if (!handle) return MEDIA_V4L2_ERROR;
 
     CaptureContext* ctx = (CaptureContext*)handle;
 
-    if (ctx->running) return STREAM_V4L2_OK;
+    if (ctx->running) return MEDIA_V4L2_OK;
 
     // Queue all buffers
     for (int i = 0; i < ctx->buffer_count; i++) {
@@ -539,7 +539,7 @@ int32_t stream_v4l2_capture_start(StreamV4L2Capture handle) {
 
         if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
             set_error("VIDIOC_QBUF failed: %s", strerror(errno));
-            return STREAM_V4L2_ERROR;
+            return MEDIA_V4L2_ERROR;
         }
     }
 
@@ -547,7 +547,7 @@ int32_t stream_v4l2_capture_start(StreamV4L2Capture handle) {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(ctx->fd, VIDIOC_STREAMON, &type) < 0) {
         set_error("VIDIOC_STREAMON failed: %s", strerror(errno));
-        return STREAM_V4L2_ERROR;
+        return MEDIA_V4L2_ERROR;
     }
 
     // Start capture thread
@@ -556,18 +556,18 @@ int32_t stream_v4l2_capture_start(StreamV4L2Capture handle) {
         set_error("Failed to create capture thread");
         ctx->running = 0;
         ioctl(ctx->fd, VIDIOC_STREAMOFF, &type);
-        return STREAM_V4L2_ERROR;
+        return MEDIA_V4L2_ERROR;
     }
 
-    return STREAM_V4L2_OK;
+    return MEDIA_V4L2_OK;
 }
 
-int32_t stream_v4l2_capture_stop(StreamV4L2Capture handle) {
-    if (!handle) return STREAM_V4L2_ERROR;
+int32_t media_v4l2_capture_stop(MediaV4L2Capture handle) {
+    if (!handle) return MEDIA_V4L2_ERROR;
 
     CaptureContext* ctx = (CaptureContext*)handle;
 
-    if (!ctx->running) return STREAM_V4L2_OK;
+    if (!ctx->running) return MEDIA_V4L2_OK;
 
     // Stop capture thread
     ctx->running = 0;
@@ -577,16 +577,16 @@ int32_t stream_v4l2_capture_stop(StreamV4L2Capture handle) {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(ctx->fd, VIDIOC_STREAMOFF, &type);
 
-    return STREAM_V4L2_OK;
+    return MEDIA_V4L2_OK;
 }
 
-void stream_v4l2_capture_destroy(StreamV4L2Capture handle) {
+void media_v4l2_capture_destroy(MediaV4L2Capture handle) {
     if (!handle) return;
 
     CaptureContext* ctx = (CaptureContext*)handle;
 
     // Stop if running
-    stream_v4l2_capture_stop(handle);
+    media_v4l2_capture_stop(handle);
 
     // Unmap buffers
     for (int i = 0; i < ctx->buffer_count; i++) {
@@ -603,17 +603,17 @@ void stream_v4l2_capture_destroy(StreamV4L2Capture handle) {
     free(ctx);
 }
 
-int32_t stream_v4l2_capture_get_width(StreamV4L2Capture handle) {
+int32_t media_v4l2_capture_get_width(MediaV4L2Capture handle) {
     if (!handle) return 0;
     return ((CaptureContext*)handle)->width;
 }
 
-int32_t stream_v4l2_capture_get_height(StreamV4L2Capture handle) {
+int32_t media_v4l2_capture_get_height(MediaV4L2Capture handle) {
     if (!handle) return 0;
     return ((CaptureContext*)handle)->height;
 }
 
-int32_t stream_v4l2_capture_get_fps(StreamV4L2Capture handle) {
+int32_t media_v4l2_capture_get_fps(MediaV4L2Capture handle) {
     if (!handle) return 0;
     return ((CaptureContext*)handle)->fps;
 }

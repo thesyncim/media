@@ -30,39 +30,39 @@ var (
 
 // V4L2 function pointers
 var (
-	streamV4L2DeviceCount      func() int32
-	streamV4L2DevicePath       func(index int32) uintptr
-	streamV4L2DeviceName       func(index int32) uintptr
-	streamV4L2FreeString       func(ptr uintptr)
-	streamV4L2CaptureCreate    func(devicePath uintptr, width, height, fps int32, callback, userData uintptr) uint64
-	streamV4L2CaptureStart     func(handle uint64) int32
-	streamV4L2CaptureStop      func(handle uint64) int32
-	streamV4L2CaptureDestroy   func(handle uint64)
-	streamV4L2CaptureGetWidth  func(handle uint64) int32
-	streamV4L2CaptureGetHeight func(handle uint64) int32
-	streamV4L2CaptureGetFPS    func(handle uint64) int32
-	streamV4L2GetError         func() uintptr
+	mediaV4L2DeviceCount      func() int32
+	mediaV4L2DevicePath       func(index int32) uintptr
+	mediaV4L2DeviceName       func(index int32) uintptr
+	mediaV4L2FreeString       func(ptr uintptr)
+	mediaV4L2CaptureCreate    func(devicePath uintptr, width, height, fps int32, callback, userData uintptr) uint64
+	mediaV4L2CaptureStart     func(handle uint64) int32
+	mediaV4L2CaptureStop      func(handle uint64) int32
+	mediaV4L2CaptureDestroy   func(handle uint64)
+	mediaV4L2CaptureGetWidth  func(handle uint64) int32
+	mediaV4L2CaptureGetHeight func(handle uint64) int32
+	mediaV4L2CaptureGetFPS    func(handle uint64) int32
+	mediaV4L2GetError         func() uintptr
 )
 
 // ALSA function pointers
 var (
-	streamALSAInputDeviceCount     func() int32
-	streamALSAInputDeviceID        func(index int32) uintptr
-	streamALSAInputDeviceName      func(index int32) uintptr
-	streamALSAFreeString           func(ptr uintptr)
-	streamALSACaptureCreate        func(deviceID uintptr, sampleRate, channels int32, callback, userData uintptr) uint64
-	streamALSACaptureStart         func(handle uint64) int32
-	streamALSACaptureStop          func(handle uint64) int32
-	streamALSACaptureDestroy       func(handle uint64)
-	streamALSACaptureGetSampleRate func(handle uint64) int32
-	streamALSACaptureGetChannels   func(handle uint64) int32
-	streamALSAGetError             func() uintptr
+	mediaALSAInputDeviceCount     func() int32
+	mediaALSAInputDeviceID        func(index int32) uintptr
+	mediaALSAInputDeviceName      func(index int32) uintptr
+	mediaALSAFreeString           func(ptr uintptr)
+	mediaALSACaptureCreate        func(deviceID uintptr, sampleRate, channels int32, callback, userData uintptr) uint64
+	mediaALSACaptureStart         func(handle uint64) int32
+	mediaALSACaptureStop          func(handle uint64) int32
+	mediaALSACaptureDestroy       func(handle uint64)
+	mediaALSACaptureGetSampleRate func(handle uint64) int32
+	mediaALSACaptureGetChannels   func(handle uint64) int32
+	mediaALSAGetError             func() uintptr
 )
 
 // findLibrary searches for a library in common locations
 func findLibrary(libName string) string {
 	searchPaths := []string{
-		os.Getenv("STREAM_SDK_LIB_PATH"),
+		os.Getenv("MEDIA_SDK_LIB_PATH"),
 	}
 
 	// Add relative paths
@@ -99,9 +99,9 @@ func findLibrary(libName string) string {
 
 func initV4L2() {
 	v4l2Once.Do(func() {
-		libPath := findLibrary("libstream_v4l2.so")
+		libPath := findLibrary("libmedia_v4l2.so")
 		if libPath == "" {
-			v4l2InitErr = fmt.Errorf("libstream_v4l2.so not found")
+			v4l2InitErr = fmt.Errorf("libmedia_v4l2.so not found")
 			return
 		}
 
@@ -113,18 +113,18 @@ func initV4L2() {
 		}
 
 		// Load function pointers
-		purego.RegisterLibFunc(&streamV4L2DeviceCount, v4l2Handle, "stream_v4l2_device_count")
-		purego.RegisterLibFunc(&streamV4L2DevicePath, v4l2Handle, "stream_v4l2_device_path")
-		purego.RegisterLibFunc(&streamV4L2DeviceName, v4l2Handle, "stream_v4l2_device_name")
-		purego.RegisterLibFunc(&streamV4L2FreeString, v4l2Handle, "stream_v4l2_free_string")
-		purego.RegisterLibFunc(&streamV4L2CaptureCreate, v4l2Handle, "stream_v4l2_capture_create")
-		purego.RegisterLibFunc(&streamV4L2CaptureStart, v4l2Handle, "stream_v4l2_capture_start")
-		purego.RegisterLibFunc(&streamV4L2CaptureStop, v4l2Handle, "stream_v4l2_capture_stop")
-		purego.RegisterLibFunc(&streamV4L2CaptureDestroy, v4l2Handle, "stream_v4l2_capture_destroy")
-		purego.RegisterLibFunc(&streamV4L2CaptureGetWidth, v4l2Handle, "stream_v4l2_capture_get_width")
-		purego.RegisterLibFunc(&streamV4L2CaptureGetHeight, v4l2Handle, "stream_v4l2_capture_get_height")
-		purego.RegisterLibFunc(&streamV4L2CaptureGetFPS, v4l2Handle, "stream_v4l2_capture_get_fps")
-		purego.RegisterLibFunc(&streamV4L2GetError, v4l2Handle, "stream_v4l2_get_error")
+		purego.RegisterLibFunc(&mediaV4L2DeviceCount, v4l2Handle, "media_v4l2_device_count")
+		purego.RegisterLibFunc(&mediaV4L2DevicePath, v4l2Handle, "media_v4l2_device_path")
+		purego.RegisterLibFunc(&mediaV4L2DeviceName, v4l2Handle, "media_v4l2_device_name")
+		purego.RegisterLibFunc(&mediaV4L2FreeString, v4l2Handle, "media_v4l2_free_string")
+		purego.RegisterLibFunc(&mediaV4L2CaptureCreate, v4l2Handle, "media_v4l2_capture_create")
+		purego.RegisterLibFunc(&mediaV4L2CaptureStart, v4l2Handle, "media_v4l2_capture_start")
+		purego.RegisterLibFunc(&mediaV4L2CaptureStop, v4l2Handle, "media_v4l2_capture_stop")
+		purego.RegisterLibFunc(&mediaV4L2CaptureDestroy, v4l2Handle, "media_v4l2_capture_destroy")
+		purego.RegisterLibFunc(&mediaV4L2CaptureGetWidth, v4l2Handle, "media_v4l2_capture_get_width")
+		purego.RegisterLibFunc(&mediaV4L2CaptureGetHeight, v4l2Handle, "media_v4l2_capture_get_height")
+		purego.RegisterLibFunc(&mediaV4L2CaptureGetFPS, v4l2Handle, "media_v4l2_capture_get_fps")
+		purego.RegisterLibFunc(&mediaV4L2GetError, v4l2Handle, "media_v4l2_get_error")
 
 		v4l2Loaded = true
 	})
@@ -132,9 +132,9 @@ func initV4L2() {
 
 func initALSA() {
 	alsaOnce.Do(func() {
-		libPath := findLibrary("libstream_alsa.so")
+		libPath := findLibrary("libmedia_alsa.so")
 		if libPath == "" {
-			alsaInitErr = fmt.Errorf("libstream_alsa.so not found")
+			alsaInitErr = fmt.Errorf("libmedia_alsa.so not found")
 			return
 		}
 
@@ -146,17 +146,17 @@ func initALSA() {
 		}
 
 		// Load function pointers
-		purego.RegisterLibFunc(&streamALSAInputDeviceCount, alsaHandle, "stream_alsa_input_device_count")
-		purego.RegisterLibFunc(&streamALSAInputDeviceID, alsaHandle, "stream_alsa_input_device_id")
-		purego.RegisterLibFunc(&streamALSAInputDeviceName, alsaHandle, "stream_alsa_input_device_name")
-		purego.RegisterLibFunc(&streamALSAFreeString, alsaHandle, "stream_alsa_free_string")
-		purego.RegisterLibFunc(&streamALSACaptureCreate, alsaHandle, "stream_alsa_capture_create")
-		purego.RegisterLibFunc(&streamALSACaptureStart, alsaHandle, "stream_alsa_capture_start")
-		purego.RegisterLibFunc(&streamALSACaptureStop, alsaHandle, "stream_alsa_capture_stop")
-		purego.RegisterLibFunc(&streamALSACaptureDestroy, alsaHandle, "stream_alsa_capture_destroy")
-		purego.RegisterLibFunc(&streamALSACaptureGetSampleRate, alsaHandle, "stream_alsa_capture_get_sample_rate")
-		purego.RegisterLibFunc(&streamALSACaptureGetChannels, alsaHandle, "stream_alsa_capture_get_channels")
-		purego.RegisterLibFunc(&streamALSAGetError, alsaHandle, "stream_alsa_get_error")
+		purego.RegisterLibFunc(&mediaALSAInputDeviceCount, alsaHandle, "media_alsa_input_device_count")
+		purego.RegisterLibFunc(&mediaALSAInputDeviceID, alsaHandle, "media_alsa_input_device_id")
+		purego.RegisterLibFunc(&mediaALSAInputDeviceName, alsaHandle, "media_alsa_input_device_name")
+		purego.RegisterLibFunc(&mediaALSAFreeString, alsaHandle, "media_alsa_free_string")
+		purego.RegisterLibFunc(&mediaALSACaptureCreate, alsaHandle, "media_alsa_capture_create")
+		purego.RegisterLibFunc(&mediaALSACaptureStart, alsaHandle, "media_alsa_capture_start")
+		purego.RegisterLibFunc(&mediaALSACaptureStop, alsaHandle, "media_alsa_capture_stop")
+		purego.RegisterLibFunc(&mediaALSACaptureDestroy, alsaHandle, "media_alsa_capture_destroy")
+		purego.RegisterLibFunc(&mediaALSACaptureGetSampleRate, alsaHandle, "media_alsa_capture_get_sample_rate")
+		purego.RegisterLibFunc(&mediaALSACaptureGetChannels, alsaHandle, "media_alsa_capture_get_channels")
+		purego.RegisterLibFunc(&mediaALSAGetError, alsaHandle, "media_alsa_get_error")
 
 		alsaLoaded = true
 	})
@@ -202,12 +202,12 @@ func (p *LinuxDeviceProvider) ListVideoDevices(ctx context.Context) ([]DeviceInf
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	count := streamV4L2DeviceCount()
+	count := mediaV4L2DeviceCount()
 	devices := make([]DeviceInfo, 0, count)
 
 	for i := int32(0); i < count; i++ {
-		pathPtr := streamV4L2DevicePath(i)
-		namePtr := streamV4L2DeviceName(i)
+		pathPtr := mediaV4L2DevicePath(i)
+		namePtr := mediaV4L2DeviceName(i)
 
 		if pathPtr != 0 && namePtr != 0 {
 			devices = append(devices, DeviceInfo{
@@ -215,8 +215,8 @@ func (p *LinuxDeviceProvider) ListVideoDevices(ctx context.Context) ([]DeviceInf
 				Label:    ptrToStringLinux(namePtr),
 				Kind:     DeviceKindVideoInput,
 			})
-			streamV4L2FreeString(pathPtr)
-			streamV4L2FreeString(namePtr)
+			mediaV4L2FreeString(pathPtr)
+			mediaV4L2FreeString(namePtr)
 		}
 	}
 
@@ -232,12 +232,12 @@ func (p *LinuxDeviceProvider) ListAudioInputDevices(ctx context.Context) ([]Devi
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	count := streamALSAInputDeviceCount()
+	count := mediaALSAInputDeviceCount()
 	devices := make([]DeviceInfo, 0, count)
 
 	for i := int32(0); i < count; i++ {
-		idPtr := streamALSAInputDeviceID(i)
-		namePtr := streamALSAInputDeviceName(i)
+		idPtr := mediaALSAInputDeviceID(i)
+		namePtr := mediaALSAInputDeviceName(i)
 
 		if idPtr != 0 && namePtr != 0 {
 			devices = append(devices, DeviceInfo{
@@ -245,8 +245,8 @@ func (p *LinuxDeviceProvider) ListAudioInputDevices(ctx context.Context) ([]Devi
 				Label:    ptrToStringLinux(namePtr),
 				Kind:     DeviceKindAudioInput,
 			})
-			streamALSAFreeString(idPtr)
-			streamALSAFreeString(namePtr)
+			mediaALSAFreeString(idPtr)
+			mediaALSAFreeString(namePtr)
 		}
 	}
 

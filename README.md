@@ -78,7 +78,7 @@ for {
 // LocalTrack implements webrtc.TrackLocal
 track := media.NewLocalTrack(webrtc.RTPCodecCapability{
     MimeType: webrtc.MimeTypeVP8,
-}, "video", "stream-1")
+}, "video", "track-1")
 
 // Add directly to peer connection
 pc.AddTrack(track)
@@ -160,7 +160,7 @@ audioSource := media.NewAudioTestPatternSource(media.AudioTestPatternConfig{
 MultiTranscoder decodes once and fans out many outputs in parallel. This is the
 same engine used by `examples/webrtc-transcoder`.
 
-### 1) One incoming stream -> passthrough + simulcast + multi-codec
+### 1) One incoming video -> passthrough + simulcast + multi-codec
 
 ```go
 // Passthrough source + VP8 simulcast + VP9/AV1 variants at 720p
@@ -254,7 +254,7 @@ if picked != nil {
 The package requires native libraries for codecs and device capture.
 
 ```bash
-make build         # builds libstream_* into ./build
+make build         # builds libmedia_* into ./build
 # or
 make build-system  # uses system libraries (faster for development)
 ```
@@ -262,17 +262,17 @@ make build-system  # uses system libraries (faster for development)
 When running purego builds, point the loader at your build directory:
 
 ```bash
-export STREAM_SDK_LIB_PATH=$PWD/build
+export MEDIA_SDK_LIB_PATH=$PWD/build
 ```
 
 Libraries built to `build/`:
-- `libstream_vpx.{dylib,so}` - VP8/VP9
-- `libstream_opus.{dylib,so}` - Opus
-- `libstream_h264.{dylib,so}` - H.264 (x264 encoder; OpenH264 decoder loaded at runtime)
-- `libstream_av1.{dylib,so}` - AV1
-- `libstream_compositor.{dylib,so}` - video compositor
-- `libstream_avfoundation.dylib` - macOS capture
-- `libstream_v4l2.so`, `libstream_alsa.so` - Linux device libraries (capture WIP in Go)
+- `libmedia_vpx.{dylib,so}` - VP8/VP9
+- `libmedia_opus.{dylib,so}` - Opus
+- `libmedia_h264.{dylib,so}` - H.264 (x264 encoder; OpenH264 decoder loaded at runtime)
+- `libmedia_av1.{dylib,so}` - AV1
+- `libmedia_compositor.{dylib,so}` - video compositor
+- `libmedia_avfoundation.dylib` - macOS capture
+- `libmedia_v4l2.so`, `libmedia_alsa.so` - Linux device libraries (capture WIP in Go)
 
 ### macOS with Homebrew (faster)
 
@@ -299,7 +299,7 @@ make test-cgo
 Or manually:
 
 ```bash
-STREAM_SDK_LIB_PATH=$PWD/build CGO_ENABLED=0 go test ./...
+MEDIA_SDK_LIB_PATH=$PWD/build CGO_ENABLED=0 go test ./...
 ```
 
 ## Codec Support

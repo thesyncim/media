@@ -1,13 +1,13 @@
 //go:build (darwin || linux) && !novpx && !cgo
 
-// Package media provides VP8/VP9 codec support via libstream_vpx using purego.
+// Package media provides VP8/VP9 codec support via libmedia_vpx using purego.
 //
-// This implementation uses purego to load libstream_vpx dynamically at runtime,
+// This implementation uses purego to load libmedia_vpx dynamically at runtime,
 // which is a thin wrapper around libvpx with a simple primitive-only API.
 //
 // Library locations checked (in order):
-//   - STREAM_VPX_LIB_PATH environment variable
-//   - STREAM_SDK_LIB_PATH environment variable (same as main FFI)
+//   - MEDIA_VPX_LIB_PATH environment variable
+//   - MEDIA_SDK_LIB_PATH environment variable (same as main FFI)
 //   - build/ffi directory (development)
 //   - System library paths
 
@@ -27,73 +27,73 @@ import (
 )
 
 var (
-	streamVPXOnce    sync.Once
-	streamVPXHandle  uintptr
-	streamVPXInitErr error
-	streamVPXLoaded  bool
+	mediaVPXOnce    sync.Once
+	mediaVPXHandle  uintptr
+	mediaVPXInitErr error
+	mediaVPXLoaded  bool
 )
 
-// libstream_vpx function pointers
+// libmedia_vpx function pointers
 var (
-	streamVPXEncoderCreate        func(codec, width, height, fps, bitrateKbps, threads int32) uint64
-	streamVPXEncoderCreateSVC     func(codec, width, height, fps, bitrateKbps, threads, temporalLayers, spatialLayers int32) uint64
-	streamVPXEncoderEncode        func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts uintptr) int32
-	streamVPXEncoderEncodeSVC     func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts, outTemporalLayer, outSpatialLayer uintptr) int32
-	streamVPXEncoderMaxOutputSize func(encoder uint64) int32
-	streamVPXEncoderRequestKF     func(encoder uint64)
-	streamVPXEncoderSetBitrate    func(encoder uint64, bitrateKbps int32) int32
-	streamVPXEncoderSetTemporal   func(encoder uint64, layers int32) int32
-	streamVPXEncoderSetSpatial    func(encoder uint64, layers int32) int32
-	streamVPXEncoderGetSVCConfig  func(encoder uint64, temporalLayers, spatialLayers, svcEnabled uintptr)
-	streamVPXEncoderGetStats      func(encoder uint64, framesEncoded, keyframesEncoded, bytesEncoded uintptr)
-	streamVPXEncoderDestroy       func(encoder uint64)
+	mediaVPXEncoderCreate        func(codec, width, height, fps, bitrateKbps, threads int32) uint64
+	mediaVPXEncoderCreateSVC     func(codec, width, height, fps, bitrateKbps, threads, temporalLayers, spatialLayers int32) uint64
+	mediaVPXEncoderEncode        func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts uintptr) int32
+	mediaVPXEncoderEncodeSVC     func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts, outTemporalLayer, outSpatialLayer uintptr) int32
+	mediaVPXEncoderMaxOutputSize func(encoder uint64) int32
+	mediaVPXEncoderRequestKF     func(encoder uint64)
+	mediaVPXEncoderSetBitrate    func(encoder uint64, bitrateKbps int32) int32
+	mediaVPXEncoderSetTemporal   func(encoder uint64, layers int32) int32
+	mediaVPXEncoderSetSpatial    func(encoder uint64, layers int32) int32
+	mediaVPXEncoderGetSVCConfig  func(encoder uint64, temporalLayers, spatialLayers, svcEnabled uintptr)
+	mediaVPXEncoderGetStats      func(encoder uint64, framesEncoded, keyframesEncoded, bytesEncoded uintptr)
+	mediaVPXEncoderDestroy       func(encoder uint64)
 
-	streamVPXDecoderCreate        func(codec, threads int32) uint64
-	streamVPXDecoderDecode        func(decoder uint64, data uintptr, dataLen int32, outY, outU, outV, outYStride, outUVStride, outWidth, outHeight uintptr) int32
-	streamVPXDecoderGetDimensions func(decoder uint64, width, height uintptr)
-	streamVPXDecoderGetStats      func(decoder uint64, framesDecoded, keyframesDecoded, bytesDecoded, corruptedFrames uintptr)
-	streamVPXDecoderReset         func(decoder uint64) int32
-	streamVPXDecoderDestroy       func(decoder uint64)
+	mediaVPXDecoderCreate        func(codec, threads int32) uint64
+	mediaVPXDecoderDecode        func(decoder uint64, data uintptr, dataLen int32, outY, outU, outV, outYStride, outUVStride, outWidth, outHeight uintptr) int32
+	mediaVPXDecoderGetDimensions func(decoder uint64, width, height uintptr)
+	mediaVPXDecoderGetStats      func(decoder uint64, framesDecoded, keyframesDecoded, bytesDecoded, corruptedFrames uintptr)
+	mediaVPXDecoderReset         func(decoder uint64) int32
+	mediaVPXDecoderDestroy       func(decoder uint64)
 
-	streamVPXGetError       func() uintptr
-	streamVPXCodecAvailable func(codec int32) int32
+	mediaVPXGetError       func() uintptr
+	mediaVPXCodecAvailable func(codec int32) int32
 )
 
-// Constants from stream_vpx.h
+// Constants from media_vpx.h
 const (
-	streamVPXCodecVP8 = 0
-	streamVPXCodecVP9 = 1
+	mediaVPXCodecVP8 = 0
+	mediaVPXCodecVP9 = 1
 
-	streamVPXFrameKey   = 0
-	streamVPXFrameDelta = 1
+	mediaVPXFrameKey   = 0
+	mediaVPXFrameDelta = 1
 
-	streamVPXOK           = 0
-	streamVPXError        = -1
-	streamVPXErrorNoMem   = -2
-	streamVPXErrorInvalid = -3
-	streamVPXErrorCodec   = -4
+	mediaVPXOK           = 0
+	mediaVPXError        = -1
+	mediaVPXErrorNoMem   = -2
+	mediaVPXErrorInvalid = -3
+	mediaVPXErrorCodec   = -4
 )
 
-// loadStreamVPX loads the libstream_vpx shared library.
-func loadStreamVPX() error {
-	streamVPXOnce.Do(func() {
-		streamVPXInitErr = loadStreamVPXLib()
-		if streamVPXInitErr == nil {
-			streamVPXLoaded = true
+// loadMediaVPX loads the libmedia_vpx shared library.
+func loadMediaVPX() error {
+	mediaVPXOnce.Do(func() {
+		mediaVPXInitErr = loadMediaVPXLib()
+		if mediaVPXInitErr == nil {
+			mediaVPXLoaded = true
 		}
 	})
-	return streamVPXInitErr
+	return mediaVPXInitErr
 }
 
-func loadStreamVPXLib() error {
-	paths := getStreamVPXLibPaths()
+func loadMediaVPXLib() error {
+	paths := getMediaVPXLibPaths()
 
 	var lastErr error
 	for _, path := range paths {
 		handle, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
 		if err == nil {
-			streamVPXHandle = handle
-			if err := loadStreamVPXSymbols(); err != nil {
+			mediaVPXHandle = handle
+			if err := loadMediaVPXSymbols(); err != nil {
 				purego.Dlclose(handle)
 				lastErr = err
 				continue
@@ -104,24 +104,24 @@ func loadStreamVPXLib() error {
 	}
 
 	if lastErr != nil {
-		return fmt.Errorf("failed to load libstream_vpx: %w", lastErr)
+		return fmt.Errorf("failed to load libmedia_vpx: %w", lastErr)
 	}
-	return errors.New("libstream_vpx not found in any standard location")
+	return errors.New("libmedia_vpx not found in any standard location")
 }
 
-func getStreamVPXLibPaths() []string {
+func getMediaVPXLibPaths() []string {
 	var paths []string
 
-	libName := "libstream_vpx.so"
+	libName := "libmedia_vpx.so"
 	if runtime.GOOS == "darwin" {
-		libName = "libstream_vpx.dylib"
+		libName = "libmedia_vpx.dylib"
 	}
 
 	// Environment variable overrides
-	if envPath := os.Getenv("STREAM_VPX_LIB_PATH"); envPath != "" {
+	if envPath := os.Getenv("MEDIA_VPX_LIB_PATH"); envPath != "" {
 		paths = append(paths, envPath)
 	}
-	if envPath := os.Getenv("STREAM_SDK_LIB_PATH"); envPath != "" {
+	if envPath := os.Getenv("MEDIA_SDK_LIB_PATH"); envPath != "" {
 		paths = append(paths, filepath.Join(envPath, libName))
 	}
 
@@ -176,57 +176,57 @@ func getStreamVPXLibPaths() []string {
 	switch runtime.GOOS {
 	case "darwin":
 		paths = append(paths,
-			"libstream_vpx.dylib",
-			"/usr/local/lib/libstream_vpx.dylib",
-			"/opt/homebrew/lib/libstream_vpx.dylib",
+			"libmedia_vpx.dylib",
+			"/usr/local/lib/libmedia_vpx.dylib",
+			"/opt/homebrew/lib/libmedia_vpx.dylib",
 		)
 	case "linux":
 		paths = append(paths,
-			"libstream_vpx.so",
-			"/usr/local/lib/libstream_vpx.so",
-			"/usr/lib/libstream_vpx.so",
+			"libmedia_vpx.so",
+			"/usr/local/lib/libmedia_vpx.so",
+			"/usr/lib/libmedia_vpx.so",
 		)
 	}
 
 	return paths
 }
 
-func loadStreamVPXSymbols() error {
+func loadMediaVPXSymbols() error {
 	// Encoder functions
-	purego.RegisterLibFunc(&streamVPXEncoderCreate, streamVPXHandle, "stream_vpx_encoder_create")
-	purego.RegisterLibFunc(&streamVPXEncoderCreateSVC, streamVPXHandle, "stream_vpx_encoder_create_svc")
-	purego.RegisterLibFunc(&streamVPXEncoderEncode, streamVPXHandle, "stream_vpx_encoder_encode")
-	purego.RegisterLibFunc(&streamVPXEncoderEncodeSVC, streamVPXHandle, "stream_vpx_encoder_encode_svc")
-	purego.RegisterLibFunc(&streamVPXEncoderMaxOutputSize, streamVPXHandle, "stream_vpx_encoder_max_output_size")
-	purego.RegisterLibFunc(&streamVPXEncoderRequestKF, streamVPXHandle, "stream_vpx_encoder_request_keyframe")
-	purego.RegisterLibFunc(&streamVPXEncoderSetBitrate, streamVPXHandle, "stream_vpx_encoder_set_bitrate")
-	purego.RegisterLibFunc(&streamVPXEncoderSetTemporal, streamVPXHandle, "stream_vpx_encoder_set_temporal_layers")
-	purego.RegisterLibFunc(&streamVPXEncoderSetSpatial, streamVPXHandle, "stream_vpx_encoder_set_spatial_layers")
-	purego.RegisterLibFunc(&streamVPXEncoderGetSVCConfig, streamVPXHandle, "stream_vpx_encoder_get_svc_config")
-	purego.RegisterLibFunc(&streamVPXEncoderGetStats, streamVPXHandle, "stream_vpx_encoder_get_stats")
-	purego.RegisterLibFunc(&streamVPXEncoderDestroy, streamVPXHandle, "stream_vpx_encoder_destroy")
+	purego.RegisterLibFunc(&mediaVPXEncoderCreate, mediaVPXHandle, "media_vpx_encoder_create")
+	purego.RegisterLibFunc(&mediaVPXEncoderCreateSVC, mediaVPXHandle, "media_vpx_encoder_create_svc")
+	purego.RegisterLibFunc(&mediaVPXEncoderEncode, mediaVPXHandle, "media_vpx_encoder_encode")
+	purego.RegisterLibFunc(&mediaVPXEncoderEncodeSVC, mediaVPXHandle, "media_vpx_encoder_encode_svc")
+	purego.RegisterLibFunc(&mediaVPXEncoderMaxOutputSize, mediaVPXHandle, "media_vpx_encoder_max_output_size")
+	purego.RegisterLibFunc(&mediaVPXEncoderRequestKF, mediaVPXHandle, "media_vpx_encoder_request_keyframe")
+	purego.RegisterLibFunc(&mediaVPXEncoderSetBitrate, mediaVPXHandle, "media_vpx_encoder_set_bitrate")
+	purego.RegisterLibFunc(&mediaVPXEncoderSetTemporal, mediaVPXHandle, "media_vpx_encoder_set_temporal_layers")
+	purego.RegisterLibFunc(&mediaVPXEncoderSetSpatial, mediaVPXHandle, "media_vpx_encoder_set_spatial_layers")
+	purego.RegisterLibFunc(&mediaVPXEncoderGetSVCConfig, mediaVPXHandle, "media_vpx_encoder_get_svc_config")
+	purego.RegisterLibFunc(&mediaVPXEncoderGetStats, mediaVPXHandle, "media_vpx_encoder_get_stats")
+	purego.RegisterLibFunc(&mediaVPXEncoderDestroy, mediaVPXHandle, "media_vpx_encoder_destroy")
 
 	// Decoder functions
-	purego.RegisterLibFunc(&streamVPXDecoderCreate, streamVPXHandle, "stream_vpx_decoder_create")
-	purego.RegisterLibFunc(&streamVPXDecoderDecode, streamVPXHandle, "stream_vpx_decoder_decode")
-	purego.RegisterLibFunc(&streamVPXDecoderGetDimensions, streamVPXHandle, "stream_vpx_decoder_get_dimensions")
-	purego.RegisterLibFunc(&streamVPXDecoderGetStats, streamVPXHandle, "stream_vpx_decoder_get_stats")
-	purego.RegisterLibFunc(&streamVPXDecoderReset, streamVPXHandle, "stream_vpx_decoder_reset")
-	purego.RegisterLibFunc(&streamVPXDecoderDestroy, streamVPXHandle, "stream_vpx_decoder_destroy")
+	purego.RegisterLibFunc(&mediaVPXDecoderCreate, mediaVPXHandle, "media_vpx_decoder_create")
+	purego.RegisterLibFunc(&mediaVPXDecoderDecode, mediaVPXHandle, "media_vpx_decoder_decode")
+	purego.RegisterLibFunc(&mediaVPXDecoderGetDimensions, mediaVPXHandle, "media_vpx_decoder_get_dimensions")
+	purego.RegisterLibFunc(&mediaVPXDecoderGetStats, mediaVPXHandle, "media_vpx_decoder_get_stats")
+	purego.RegisterLibFunc(&mediaVPXDecoderReset, mediaVPXHandle, "media_vpx_decoder_reset")
+	purego.RegisterLibFunc(&mediaVPXDecoderDestroy, mediaVPXHandle, "media_vpx_decoder_destroy")
 
 	// Utility functions
-	purego.RegisterLibFunc(&streamVPXGetError, streamVPXHandle, "stream_vpx_get_error")
-	purego.RegisterLibFunc(&streamVPXCodecAvailable, streamVPXHandle, "stream_vpx_codec_available")
+	purego.RegisterLibFunc(&mediaVPXGetError, mediaVPXHandle, "media_vpx_get_error")
+	purego.RegisterLibFunc(&mediaVPXCodecAvailable, mediaVPXHandle, "media_vpx_codec_available")
 
 	return nil
 }
 
-// IsVPXAvailable checks if libstream_vpx is available.
+// IsVPXAvailable checks if libmedia_vpx is available.
 func IsVPXAvailable() bool {
-	if err := loadStreamVPX(); err != nil {
+	if err := loadMediaVPX(); err != nil {
 		return false
 	}
-	return streamVPXLoaded
+	return mediaVPXLoaded
 }
 
 // IsVP8Available checks if VP8 codec is available.
@@ -234,7 +234,7 @@ func IsVP8Available() bool {
 	if !IsVPXAvailable() {
 		return false
 	}
-	return streamVPXCodecAvailable(streamVPXCodecVP8) != 0
+	return mediaVPXCodecAvailable(mediaVPXCodecVP8) != 0
 }
 
 // IsVP9Available checks if VP9 codec is available.
@@ -242,18 +242,18 @@ func IsVP9Available() bool {
 	if !IsVPXAvailable() {
 		return false
 	}
-	return streamVPXCodecAvailable(streamVPXCodecVP9) != 0
+	return mediaVPXCodecAvailable(mediaVPXCodecVP9) != 0
 }
 
 func getVPXError() string {
-	ptr := streamVPXGetError()
+	ptr := mediaVPXGetError()
 	if ptr == 0 {
 		return "unknown error"
 	}
 	return goStringFromPtr(ptr)
 }
 
-// VPXEncoder implements VideoEncoder using libstream_vpx via purego.
+// VPXEncoder implements VideoEncoder using libmedia_vpx via purego.
 type VPXEncoder struct {
 	config VideoEncoderConfig
 	codec  VideoCodec
@@ -284,16 +284,16 @@ func NewVP9Encoder(config VideoEncoderConfig) (*VPXEncoder, error) {
 }
 
 func newVPXEncoder(config VideoEncoderConfig, codec VideoCodec) (*VPXEncoder, error) {
-	if err := loadStreamVPX(); err != nil {
+	if err := loadMediaVPX(); err != nil {
 		return nil, fmt.Errorf("%s encoder not available: %w", codec, err)
 	}
 
 	var codecType int32
 	switch codec {
 	case VideoCodecVP8:
-		codecType = streamVPXCodecVP8
+		codecType = mediaVPXCodecVP8
 	case VideoCodecVP9:
-		codecType = streamVPXCodecVP9
+		codecType = mediaVPXCodecVP9
 	default:
 		return nil, fmt.Errorf("unsupported codec: %s", codec)
 	}
@@ -326,7 +326,7 @@ func newVPXEncoder(config VideoEncoderConfig, codec VideoCodec) (*VPXEncoder, er
 	svcEnabled := temporalLayers > 1 || spatialLayers > 1
 
 	if svcEnabled {
-		handle = streamVPXEncoderCreateSVC(
+		handle = mediaVPXEncoderCreateSVC(
 			codecType,
 			int32(config.Width),
 			int32(config.Height),
@@ -337,7 +337,7 @@ func newVPXEncoder(config VideoEncoderConfig, codec VideoCodec) (*VPXEncoder, er
 			int32(spatialLayers),
 		)
 	} else {
-		handle = streamVPXEncoderCreate(
+		handle = mediaVPXEncoderCreate(
 			codecType,
 			int32(config.Width),
 			int32(config.Height),
@@ -351,7 +351,7 @@ func newVPXEncoder(config VideoEncoderConfig, codec VideoCodec) (*VPXEncoder, er
 		return nil, fmt.Errorf("failed to create %s encoder: %s", codec, getVPXError())
 	}
 
-	maxOutput := streamVPXEncoderMaxOutputSize(handle)
+	maxOutput := mediaVPXEncoderMaxOutputSize(handle)
 	if maxOutput <= 0 {
 		maxOutput = int32(config.Width * config.Height * 3 / 2)
 	}
@@ -390,7 +390,7 @@ func (e *VPXEncoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	var result int32
 
 	if e.svcEnabled {
-		result = streamVPXEncoderEncodeSVC(
+		result = mediaVPXEncoderEncodeSVC(
 			e.handle,
 			uintptr(unsafe.Pointer(&frame.Data[0][0])),
 			uintptr(unsafe.Pointer(&frame.Data[1][0])),
@@ -406,7 +406,7 @@ func (e *VPXEncoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 			uintptr(unsafe.Pointer(&spatialLayer)),
 		)
 	} else {
-		result = streamVPXEncoderEncode(
+		result = mediaVPXEncoderEncode(
 			e.handle,
 			uintptr(unsafe.Pointer(&frame.Data[0][0])),
 			uintptr(unsafe.Pointer(&frame.Data[1][0])),
@@ -434,7 +434,7 @@ func (e *VPXEncoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	copy(data, e.outputBuf[:result])
 
 	ft := FrameTypeDelta
-	if frameType == streamVPXFrameKey {
+	if frameType == mediaVPXFrameKey {
 		ft = FrameTypeKey
 	}
 
@@ -466,7 +466,7 @@ func (e *VPXEncoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 func (e *VPXEncoder) RequestKeyframe() {
 	e.keyframeReq.Store(true)
 	if e.handle != 0 {
-		streamVPXEncoderRequestKF(e.handle)
+		mediaVPXEncoderRequestKF(e.handle)
 	}
 }
 
@@ -480,7 +480,7 @@ func (e *VPXEncoder) SetBitrate(bitrateBps int) error {
 	}
 
 	bitrateKbps := int32(bitrateBps / 1000)
-	if streamVPXEncoderSetBitrate(e.handle, bitrateKbps) != streamVPXOK {
+	if mediaVPXEncoderSetBitrate(e.handle, bitrateKbps) != mediaVPXOK {
 		return fmt.Errorf("failed to set bitrate: %s", getVPXError())
 	}
 
@@ -511,13 +511,13 @@ func (e *VPXEncoder) SetSVCLayers(temporalLayers, spatialLayers int) error {
 	}
 
 	// Set temporal layers first
-	if streamVPXEncoderSetTemporal(e.handle, int32(temporalLayers)) != streamVPXOK {
+	if mediaVPXEncoderSetTemporal(e.handle, int32(temporalLayers)) != mediaVPXOK {
 		return fmt.Errorf("failed to set temporal layers: %s", getVPXError())
 	}
 
 	// Set spatial layers (VP9 only, but C wrapper handles VP8 gracefully)
 	if e.codec == VideoCodecVP9 {
-		if streamVPXEncoderSetSpatial(e.handle, int32(spatialLayers)) != streamVPXOK {
+		if mediaVPXEncoderSetSpatial(e.handle, int32(spatialLayers)) != mediaVPXOK {
 			return fmt.Errorf("failed to set spatial layers: %s", getVPXError())
 		}
 	}
@@ -552,7 +552,7 @@ func (e *VPXEncoder) GetSVCConfig() (temporalLayers, spatialLayers int, svcEnabl
 	}
 
 	var tempLayers, spatLayers, enabled int32
-	streamVPXEncoderGetSVCConfig(e.handle,
+	mediaVPXEncoderGetSVCConfig(e.handle,
 		uintptr(unsafe.Pointer(&tempLayers)),
 		uintptr(unsafe.Pointer(&spatLayers)),
 		uintptr(unsafe.Pointer(&enabled)),
@@ -589,14 +589,14 @@ func (e *VPXEncoder) Close() error {
 	defer e.mu.Unlock()
 
 	if e.handle != 0 {
-		streamVPXEncoderDestroy(e.handle)
+		mediaVPXEncoderDestroy(e.handle)
 		e.handle = 0
 	}
 
 	return nil
 }
 
-// VPXDecoder implements VideoDecoder using libstream_vpx via purego.
+// VPXDecoder implements VideoDecoder using libmedia_vpx via purego.
 type VPXDecoder struct {
 	config VideoDecoderConfig
 	codec  VideoCodec
@@ -622,16 +622,16 @@ func NewVP9Decoder(config VideoDecoderConfig) (*VPXDecoder, error) {
 }
 
 func newVPXDecoder(config VideoDecoderConfig, codec VideoCodec) (*VPXDecoder, error) {
-	if err := loadStreamVPX(); err != nil {
+	if err := loadMediaVPX(); err != nil {
 		return nil, fmt.Errorf("%s decoder not available: %w", codec, err)
 	}
 
 	var codecType int32
 	switch codec {
 	case VideoCodecVP8:
-		codecType = streamVPXCodecVP8
+		codecType = mediaVPXCodecVP8
 	case VideoCodecVP9:
-		codecType = streamVPXCodecVP9
+		codecType = mediaVPXCodecVP9
 	default:
 		return nil, fmt.Errorf("unsupported codec: %s", codec)
 	}
@@ -641,7 +641,7 @@ func newVPXDecoder(config VideoDecoderConfig, codec VideoCodec) (*VPXDecoder, er
 		threads = int32(config.Threads)
 	}
 
-	handle := streamVPXDecoderCreate(codecType, threads)
+	handle := mediaVPXDecoderCreate(codecType, threads)
 	if handle == 0 {
 		return nil, fmt.Errorf("failed to create %s decoder: %s", codec, getVPXError())
 	}
@@ -665,7 +665,7 @@ func (d *VPXDecoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 	var outY, outU, outV uintptr
 	var outYStride, outUVStride, outWidth, outHeight int32
 
-	result := streamVPXDecoderDecode(
+	result := mediaVPXDecoderDecode(
 		d.handle,
 		uintptr(unsafe.Pointer(&encoded.Data[0])),
 		int32(len(encoded.Data)),
@@ -776,7 +776,7 @@ func (d *VPXDecoder) Reset() error {
 		return fmt.Errorf("decoder not initialized")
 	}
 
-	if streamVPXDecoderReset(d.handle) != streamVPXOK {
+	if mediaVPXDecoderReset(d.handle) != mediaVPXOK {
 		return fmt.Errorf("failed to reset decoder: %s", getVPXError())
 	}
 
@@ -790,7 +790,7 @@ func (d *VPXDecoder) GetDimensions() (width, height int) {
 
 	if d.handle != 0 {
 		var w, h int32
-		streamVPXDecoderGetDimensions(d.handle, uintptr(unsafe.Pointer(&w)), uintptr(unsafe.Pointer(&h)))
+		mediaVPXDecoderGetDimensions(d.handle, uintptr(unsafe.Pointer(&w)), uintptr(unsafe.Pointer(&h)))
 		return int(w), int(h)
 	}
 	return d.width, d.height
@@ -802,7 +802,7 @@ func (d *VPXDecoder) Close() error {
 	defer d.mu.Unlock()
 
 	if d.handle != 0 {
-		streamVPXDecoderDestroy(d.handle)
+		mediaVPXDecoderDestroy(d.handle)
 		d.handle = 0
 	}
 

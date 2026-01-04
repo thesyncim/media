@@ -709,10 +709,11 @@ type MultiTranscoder struct {
 	inFlightEncodes int32 // atomic: tracks goroutines currently encoding
 
 	// Auto-recovery: callback to request keyframe from source
-	onKeyframeNeeded    KeyframeRequestFunc
-	needsKeyframe       int32     // atomic: 1 if waiting for keyframe
-	consecutiveErrors   int32     // atomic: count of consecutive decode errors
-	lastKeyframeRequest time.Time // rate limit keyframe requests
+	onKeyframeNeeded     KeyframeRequestFunc
+	needsKeyframe        int32 // atomic: 1 if waiting for keyframe
+	consecutiveErrors    int32 // atomic: count of consecutive decode errors
+	lastKeyframeRequest  int64 // atomic: unix nano of last keyframe request
+	minKeyframeInterval  int64 // minimum interval between keyframe requests in nanoseconds
 
 	mu sync.RWMutex // RWMutex allows concurrent reads (RequestKeyframe, etc)
 }
@@ -743,6 +744,11 @@ type MultiTranscoderConfig struct {
 	// Set this to send PLI/FIR to your video source (e.g., WebRTC peer connection).
 	// If not set, the transcoder will wait for a keyframe but cannot request one.
 	OnKeyframeNeeded KeyframeRequestFunc
+
+	// MinKeyframeInterval is the minimum time between keyframe requests.
+	// This prevents flooding the source with PLI requests during recovery.
+	// Default is 1 second. Set to 0 to use the default.
+	MinKeyframeInterval time.Duration
 }
 
 // NewMultiTranscoder creates a transcoder that outputs multiple variants.
@@ -772,14 +778,20 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 		encodeTimeout = 500 * time.Millisecond // Default timeout
 	}
 
+	minKeyframeInterval := config.MinKeyframeInterval
+	if minKeyframeInterval == 0 {
+		minKeyframeInterval = 1 * time.Second // Default: max 1 PLI per second
+	}
+
 	mt := &MultiTranscoder{
-		inputCodec:       config.InputCodec,
-		inputWidth:       config.InputWidth,
-		inputHeight:      config.InputHeight,
-		inputFPS:         config.InputFPS,
-		pipelines:        make(map[string]*outputPipeline),
-		encodeTimeout:    encodeTimeout,
-		onKeyframeNeeded: config.OnKeyframeNeeded,
+		inputCodec:          config.InputCodec,
+		inputWidth:          config.InputWidth,
+		inputHeight:         config.InputHeight,
+		inputFPS:            config.InputFPS,
+		pipelines:           make(map[string]*outputPipeline),
+		encodeTimeout:       encodeTimeout,
+		onKeyframeNeeded:    config.OnKeyframeNeeded,
+		minKeyframeInterval: minKeyframeInterval.Nanoseconds(),
 	}
 
 	// Create encoders for each variant (skip for passthrough)
@@ -941,15 +953,10 @@ func (mt *MultiTranscoder) Transcode(input *EncodedFrame) (*TranscodeResult, err
 		// Track consecutive errors for auto-recovery
 		errCount := atomic.AddInt32(&mt.consecutiveErrors, 1)
 
-		// After 3 consecutive errors, request keyframe from source
-		if errCount >= 3 && mt.onKeyframeNeeded != nil {
-			// Rate limit: max once per 500ms
-			if time.Since(mt.lastKeyframeRequest) > 500*time.Millisecond {
-				mt.lastKeyframeRequest = time.Now()
-				atomic.StoreInt32(&mt.needsKeyframe, 1)
-				// Call the callback (non-blocking)
-				go mt.onKeyframeNeeded()
-			}
+		// After 3 consecutive errors, request keyframe from source (rate-limited)
+		if errCount >= 3 {
+			atomic.StoreInt32(&mt.needsKeyframe, 1)
+			mt.requestKeyframeFromSource()
 		}
 
 		return nil, fmt.Errorf("decode failed: %w", err)
@@ -1178,6 +1185,39 @@ func (mt *MultiTranscoder) SetKeyframeCallback(fn KeyframeRequestFunc) {
 	mt.onKeyframeNeeded = fn
 }
 
+// requestKeyframeFromSource sends a rate-limited keyframe request to the source.
+// Returns true if a request was sent, false if rate-limited or no callback set.
+// This is the central point for all keyframe requests to prevent flooding.
+func (mt *MultiTranscoder) requestKeyframeFromSource() bool {
+	// Get the callback (read under lock)
+	mt.mu.RLock()
+	callback := mt.onKeyframeNeeded
+	mt.mu.RUnlock()
+
+	if callback == nil {
+		return false
+	}
+
+	// Check rate limit atomically
+	now := time.Now().UnixNano()
+	lastRequest := atomic.LoadInt64(&mt.lastKeyframeRequest)
+
+	if now-lastRequest < mt.minKeyframeInterval {
+		// Rate limited - don't send
+		return false
+	}
+
+	// Try to update last request time (compare-and-swap to avoid races)
+	if !atomic.CompareAndSwapInt64(&mt.lastKeyframeRequest, lastRequest, now) {
+		// Another goroutine beat us - they will send the request
+		return false
+	}
+
+	// Send the request in a goroutine to avoid blocking
+	go callback()
+	return true
+}
+
 // NeedsKeyframe returns true if the transcoder is waiting for a keyframe to recover.
 func (mt *MultiTranscoder) NeedsKeyframe() bool {
 	return atomic.LoadInt32(&mt.needsKeyframe) == 1
@@ -1185,30 +1225,51 @@ func (mt *MultiTranscoder) NeedsKeyframe() bool {
 
 // RequestSourceKeyframe manually triggers a keyframe request from the source.
 // This is automatically called on decode errors, but can be called manually if needed.
+// Note: This is rate-limited by MinKeyframeInterval to prevent flooding.
 func (mt *MultiTranscoder) RequestSourceKeyframe() {
-	if mt.onKeyframeNeeded != nil {
-		atomic.StoreInt32(&mt.needsKeyframe, 1)
-		go mt.onKeyframeNeeded()
-	}
+	atomic.StoreInt32(&mt.needsKeyframe, 1)
+	mt.requestKeyframeFromSource()
 }
 
-// RequestKeyframe requests a keyframe from a specific output variant (encoder).
+// RequestKeyframe requests a keyframe from a specific output variant.
+// For passthrough variants (no encoder), this requests a keyframe from the source.
+// Note: Source requests are rate-limited by MinKeyframeInterval.
 func (mt *MultiTranscoder) RequestKeyframe(variantID string) {
-	mt.mu.Lock()
-	defer mt.mu.Unlock()
-	if pipeline, ok := mt.pipelines[variantID]; ok && pipeline.encoder != nil {
+	mt.mu.RLock()
+	pipeline, ok := mt.pipelines[variantID]
+	mt.mu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	if pipeline.passthrough {
+		// Passthrough variant - request from source since there's no encoder (rate-limited)
+		mt.requestKeyframeFromSource()
+	} else if pipeline.encoder != nil {
+		// Regular variant - request from encoder
 		pipeline.encoder.RequestKeyframe()
 	}
 }
 
 // RequestKeyframeAll requests keyframes from all variants.
+// For passthrough variants, requests a keyframe from the source.
+// Note: Source requests are rate-limited by MinKeyframeInterval.
 func (mt *MultiTranscoder) RequestKeyframeAll() {
-	mt.mu.Lock()
-	defer mt.mu.Unlock()
+	mt.mu.RLock()
+	hasPassthrough := false
 	for _, pipeline := range mt.pipelines {
-		if pipeline.encoder != nil {
+		if pipeline.passthrough {
+			hasPassthrough = true
+		} else if pipeline.encoder != nil {
 			pipeline.encoder.RequestKeyframe()
 		}
+	}
+	mt.mu.RUnlock()
+
+	// Request from source once if any passthrough variants exist (rate-limited)
+	if hasPassthrough {
+		mt.requestKeyframeFromSource()
 	}
 }
 

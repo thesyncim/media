@@ -1,18 +1,18 @@
 //go:build (darwin || linux) && !noopus && cgo
 
-// Package media provides Opus audio codec support via libstream_opus using CGO.
+// Package media provides Opus audio codec support via libmedia_opus using CGO.
 //
-// This implementation uses CGO to link directly against libstream_opus,
+// This implementation uses CGO to link directly against libmedia_opus,
 // providing better performance than the purego variant.
 
 package media
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/clib
-#cgo darwin LDFLAGS: -L${SRCDIR}/build -lstream_opus -Wl,-rpath,${SRCDIR}/build
-#cgo linux LDFLAGS: -L${SRCDIR}/build -lstream_opus -Wl,-rpath,${SRCDIR}/build
+#cgo darwin LDFLAGS: -L${SRCDIR}/build -lmedia_opus -Wl,-rpath,${SRCDIR}/build
+#cgo linux LDFLAGS: -L${SRCDIR}/build -lmedia_opus -Wl,-rpath,${SRCDIR}/build
 
-#include "stream_opus.h"
+#include "media_opus.h"
 #include <stdlib.h>
 */
 import "C"
@@ -24,17 +24,17 @@ import (
 	"unsafe"
 )
 
-// Constants from stream_opus.h
+// Constants from media_opus.h
 const (
-	streamOpusApplicationVOIP     = C.STREAM_OPUS_APPLICATION_VOIP
-	streamOpusApplicationAudio    = C.STREAM_OPUS_APPLICATION_AUDIO
-	streamOpusApplicationLowDelay = C.STREAM_OPUS_APPLICATION_LOWDELAY
+	streamOpusApplicationVOIP     = C.MEDIA_OPUS_APPLICATION_VOIP
+	streamOpusApplicationAudio    = C.MEDIA_OPUS_APPLICATION_AUDIO
+	streamOpusApplicationLowDelay = C.MEDIA_OPUS_APPLICATION_LOWDELAY
 
-	streamOpusOK           = C.STREAM_OPUS_OK
-	streamOpusError        = C.STREAM_OPUS_ERROR
-	streamOpusErrorNoMem   = C.STREAM_OPUS_ERROR_NOMEM
-	streamOpusErrorInvalid = C.STREAM_OPUS_ERROR_INVALID
-	streamOpusErrorCodec   = C.STREAM_OPUS_ERROR_CODEC
+	streamOpusOK           = C.MEDIA_OPUS_OK
+	streamOpusError        = C.MEDIA_OPUS_ERROR
+	streamOpusErrorNoMem   = C.MEDIA_OPUS_ERROR_NOMEM
+	streamOpusErrorInvalid = C.MEDIA_OPUS_ERROR_INVALID
+	streamOpusErrorCodec   = C.MEDIA_OPUS_ERROR_CODEC
 )
 
 // OpusApplication defines the application type for Opus encoder
@@ -49,7 +49,7 @@ const (
 	OpusApplicationLowDelay OpusApplication = streamOpusApplicationLowDelay
 )
 
-// IsOpusAvailable checks if libstream_opus is available.
+// IsOpusAvailable checks if libmedia_opus is available.
 // With CGO this is always true since it links at compile time.
 func IsOpusAvailable() bool {
 	return true
@@ -57,7 +57,7 @@ func IsOpusAvailable() bool {
 
 // GetOpusVersion returns the libopus version string.
 func GetOpusVersion() string {
-	cstr := C.stream_opus_get_version()
+	cstr := C.media_opus_get_version()
 	if cstr == nil {
 		return ""
 	}
@@ -65,7 +65,7 @@ func GetOpusVersion() string {
 }
 
 func getOpusError() string {
-	cstr := C.stream_opus_get_error()
+	cstr := C.media_opus_get_error()
 	if cstr == nil {
 		return "unknown error"
 	}
@@ -76,7 +76,7 @@ func getOpusError() string {
 type OpusEncoder struct {
 	config AudioEncoderConfig
 
-	handle       C.stream_opus_encoder_t
+	handle       C.media_opus_encoder_t
 	outputBuf    []byte
 	pcmBuf       []C.int16_t
 	sampleRate   int
@@ -109,7 +109,7 @@ func NewOpusEncoder(config AudioEncoderConfig) (*OpusEncoder, error) {
 		application = OpusApplication(config.Application)
 	}
 
-	handle := C.stream_opus_encoder_create(
+	handle := C.media_opus_encoder_create(
 		C.int32_t(sampleRate),
 		C.int32_t(channels),
 		C.int32_t(application),
@@ -120,12 +120,12 @@ func NewOpusEncoder(config AudioEncoderConfig) (*OpusEncoder, error) {
 
 	// Set bitrate if specified
 	if config.BitrateBps > 0 {
-		C.stream_opus_encoder_set_bitrate(handle, C.int32_t(config.BitrateBps))
+		C.media_opus_encoder_set_bitrate(handle, C.int32_t(config.BitrateBps))
 	}
 
 	// Enable FEC by default for RTC
-	C.stream_opus_encoder_set_fec(handle, 1)
-	C.stream_opus_encoder_set_packet_loss(handle, 10)
+	C.media_opus_encoder_set_fec(handle, 1)
+	C.media_opus_encoder_set_packet_loss(handle, 10)
 
 	enc := &OpusEncoder{
 		config:       config,
@@ -168,7 +168,7 @@ func (e *OpusEncoder) Encode(samples *AudioSamples) (*EncodedAudio, error) {
 
 	frameSize := numSamples / e.channels
 
-	result := C.stream_opus_encoder_encode(
+	result := C.media_opus_encoder_encode(
 		e.handle,
 		(*C.int16_t)(unsafe.Pointer(&e.pcmBuf[0])),
 		C.int32_t(frameSize),
@@ -207,7 +207,7 @@ func (e *OpusEncoder) EncodeFloat(samples []float32, frameSize int) ([]byte, err
 		return nil, fmt.Errorf("encoder not initialized")
 	}
 
-	result := C.stream_opus_encoder_encode_float(
+	result := C.media_opus_encoder_encode_float(
 		e.handle,
 		(*C.float)(unsafe.Pointer(&samples[0])),
 		C.int32_t(frameSize),
@@ -240,7 +240,7 @@ func (e *OpusEncoder) SetBitrate(bitrateBps int) error {
 		return fmt.Errorf("encoder not initialized")
 	}
 
-	if C.stream_opus_encoder_set_bitrate(e.handle, C.int32_t(bitrateBps)) != streamOpusOK {
+	if C.media_opus_encoder_set_bitrate(e.handle, C.int32_t(bitrateBps)) != streamOpusOK {
 		return fmt.Errorf("failed to set bitrate: %s", getOpusError())
 	}
 
@@ -256,7 +256,7 @@ func (e *OpusEncoder) GetBitrate() int {
 	if e.handle == 0 {
 		return 0
 	}
-	return int(C.stream_opus_encoder_get_bitrate(e.handle))
+	return int(C.media_opus_encoder_get_bitrate(e.handle))
 }
 
 // SetComplexity sets the encoder complexity (0-10).
@@ -268,7 +268,7 @@ func (e *OpusEncoder) SetComplexity(complexity int) error {
 		return fmt.Errorf("encoder not initialized")
 	}
 
-	if C.stream_opus_encoder_set_complexity(e.handle, C.int32_t(complexity)) != streamOpusOK {
+	if C.media_opus_encoder_set_complexity(e.handle, C.int32_t(complexity)) != streamOpusOK {
 		return fmt.Errorf("failed to set complexity: %s", getOpusError())
 	}
 	return nil
@@ -287,7 +287,7 @@ func (e *OpusEncoder) SetDTX(enabled bool) error {
 	if enabled {
 		val = 1
 	}
-	if C.stream_opus_encoder_set_dtx(e.handle, val) != streamOpusOK {
+	if C.media_opus_encoder_set_dtx(e.handle, val) != streamOpusOK {
 		return fmt.Errorf("failed to set DTX: %s", getOpusError())
 	}
 	return nil
@@ -306,7 +306,7 @@ func (e *OpusEncoder) SetFEC(enabled bool) error {
 	if enabled {
 		val = 1
 	}
-	if C.stream_opus_encoder_set_fec(e.handle, val) != streamOpusOK {
+	if C.media_opus_encoder_set_fec(e.handle, val) != streamOpusOK {
 		return fmt.Errorf("failed to set FEC: %s", getOpusError())
 	}
 	return nil
@@ -321,7 +321,7 @@ func (e *OpusEncoder) SetPacketLossPercent(percent int) error {
 		return fmt.Errorf("encoder not initialized")
 	}
 
-	if C.stream_opus_encoder_set_packet_loss(e.handle, C.int32_t(percent)) != streamOpusOK {
+	if C.media_opus_encoder_set_packet_loss(e.handle, C.int32_t(percent)) != streamOpusOK {
 		return fmt.Errorf("failed to set packet loss: %s", getOpusError())
 	}
 	return nil
@@ -350,7 +350,7 @@ func (e *OpusEncoder) Close() error {
 	defer e.mu.Unlock()
 
 	if e.handle != 0 {
-		C.stream_opus_encoder_destroy(e.handle)
+		C.media_opus_encoder_destroy(e.handle)
 		e.handle = 0
 	}
 	return nil
@@ -359,7 +359,7 @@ func (e *OpusEncoder) Close() error {
 // OpusDecoder implements AudioDecoder for Opus.
 type OpusDecoder struct {
 	config     AudioDecoderConfig
-	handle     C.stream_opus_decoder_t
+	handle     C.media_opus_decoder_t
 	sampleRate int
 	channels   int
 	outputBuf  []C.int16_t
@@ -385,7 +385,7 @@ func NewOpusDecoder(config AudioDecoderConfig) (*OpusDecoder, error) {
 		return nil, fmt.Errorf("Opus supports max 2 channels, got %d", channels)
 	}
 
-	handle := C.stream_opus_decoder_create(
+	handle := C.media_opus_decoder_create(
 		C.int32_t(sampleRate),
 		C.int32_t(channels),
 	)
@@ -425,7 +425,7 @@ func (d *OpusDecoder) Decode(encoded *EncodedAudio) (*AudioSamples, error) {
 		dataLen = C.int32_t(len(encoded.Data))
 	}
 
-	result := C.stream_opus_decoder_decode(
+	result := C.media_opus_decoder_decode(
 		d.handle,
 		dataPtr,
 		dataLen,
@@ -487,7 +487,7 @@ func (d *OpusDecoder) DecodeWithPLC(data []byte) (*AudioSamples, error) {
 		dataLen = C.int32_t(len(data))
 	}
 
-	result := C.stream_opus_decoder_decode(
+	result := C.media_opus_decoder_decode(
 		d.handle,
 		dataPtr,
 		dataLen,
@@ -548,7 +548,7 @@ func (d *OpusDecoder) Reset() error {
 		return fmt.Errorf("decoder not initialized")
 	}
 
-	if C.stream_opus_decoder_reset(d.handle) != streamOpusOK {
+	if C.media_opus_decoder_reset(d.handle) != streamOpusOK {
 		return fmt.Errorf("failed to reset decoder: %s", getOpusError())
 	}
 	return nil
@@ -560,7 +560,7 @@ func (d *OpusDecoder) Close() error {
 	defer d.mu.Unlock()
 
 	if d.handle != 0 {
-		C.stream_opus_decoder_destroy(d.handle)
+		C.media_opus_decoder_destroy(d.handle)
 		d.handle = 0
 	}
 	return nil
@@ -571,7 +571,7 @@ func GetOpusPacketSamples(data []byte, sampleRate int) int {
 	if len(data) == 0 {
 		return 0
 	}
-	return int(C.stream_opus_packet_get_samples(
+	return int(C.media_opus_packet_get_samples(
 		(*C.uint8_t)(unsafe.Pointer(&data[0])),
 		C.int32_t(len(data)),
 		C.int32_t(sampleRate),

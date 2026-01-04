@@ -33,34 +33,34 @@ var (
 	avfLoaded  bool
 )
 
-// libstream_avfoundation function pointers
+// libmedia_avfoundation function pointers
 var (
-	streamAVVideoDeviceCount           func() int32
-	streamAVAudioInputDeviceCount      func() int32
-	streamAVVideoDeviceID              func(index int32) uintptr
-	streamAVVideoDeviceLabel           func(index int32) uintptr
-	streamAVAudioInputDeviceID         func(index int32) uintptr
-	streamAVAudioInputDeviceLabel      func(index int32) uintptr
-	streamAVFreeString                 func(ptr uintptr)
-	streamAVCameraPermissionStatus     func() int32
-	streamAVMicrophonePermissionStatus func() int32
-	streamAVRequestCameraPermission    func()
-	streamAVRequestMicPermission       func()
-	streamAVVideoCaptureCreate         func(deviceID uintptr, width, height, fps int32, callback, userData uintptr) uint64
-	streamAVVideoCaptureStart          func(handle uint64) int32
-	streamAVVideoCaptureStop           func(handle uint64) int32
-	streamAVVideoCaptureDestroy        func(handle uint64)
-	streamAVGetError                   func() uintptr
-	streamAVVideoDeviceFPSRange        func(deviceID uintptr, minFPS, maxFPS uintptr) int32
+	mediaAVVideoDeviceCount           func() int32
+	mediaAVAudioInputDeviceCount      func() int32
+	mediaAVVideoDeviceID              func(index int32) uintptr
+	mediaAVVideoDeviceLabel           func(index int32) uintptr
+	mediaAVAudioInputDeviceID         func(index int32) uintptr
+	mediaAVAudioInputDeviceLabel      func(index int32) uintptr
+	mediaAVFreeString                 func(ptr uintptr)
+	mediaAVCameraPermissionStatus     func() int32
+	mediaAVMicrophonePermissionStatus func() int32
+	mediaAVRequestCameraPermission    func()
+	mediaAVRequestMicPermission       func()
+	mediaAVVideoCaptureCreate         func(deviceID uintptr, width, height, fps int32, callback, userData uintptr) uint64
+	mediaAVVideoCaptureStart          func(handle uint64) int32
+	mediaAVVideoCaptureStop           func(handle uint64) int32
+	mediaAVVideoCaptureDestroy        func(handle uint64)
+	mediaAVGetError                   func() uintptr
+	mediaAVVideoDeviceFPSRange        func(deviceID uintptr, minFPS, maxFPS uintptr) int32
 )
 
 func initAVFoundation() {
 	avfOnce.Do(func() {
 		// Try to find the library
-		libName := "libstream_avfoundation.dylib"
+		libName := "libmedia_avfoundation.dylib"
 		searchPaths := []string{
-			os.Getenv("STREAM_AV_LIB_PATH"),
-			os.Getenv("STREAM_SDK_LIB_PATH"),
+			os.Getenv("MEDIA_AV_LIB_PATH"),
+			os.Getenv("MEDIA_SDK_LIB_PATH"),
 		}
 
 		// Add relative paths
@@ -94,7 +94,7 @@ func initAVFoundation() {
 		}
 
 		if libPath == "" {
-			avfInitErr = fmt.Errorf("libstream_avfoundation.dylib not found")
+			avfInitErr = fmt.Errorf("libmedia_avfoundation.dylib not found")
 			return
 		}
 
@@ -106,23 +106,23 @@ func initAVFoundation() {
 		}
 
 		// Load function pointers
-		purego.RegisterLibFunc(&streamAVVideoDeviceCount, avfHandle, "stream_av_video_device_count")
-		purego.RegisterLibFunc(&streamAVAudioInputDeviceCount, avfHandle, "stream_av_audio_input_device_count")
-		purego.RegisterLibFunc(&streamAVVideoDeviceID, avfHandle, "stream_av_video_device_id")
-		purego.RegisterLibFunc(&streamAVVideoDeviceLabel, avfHandle, "stream_av_video_device_label")
-		purego.RegisterLibFunc(&streamAVAudioInputDeviceID, avfHandle, "stream_av_audio_input_device_id")
-		purego.RegisterLibFunc(&streamAVAudioInputDeviceLabel, avfHandle, "stream_av_audio_input_device_label")
-		purego.RegisterLibFunc(&streamAVFreeString, avfHandle, "stream_av_free_string")
-		purego.RegisterLibFunc(&streamAVCameraPermissionStatus, avfHandle, "stream_av_camera_permission_status")
-		purego.RegisterLibFunc(&streamAVMicrophonePermissionStatus, avfHandle, "stream_av_microphone_permission_status")
-		purego.RegisterLibFunc(&streamAVRequestCameraPermission, avfHandle, "stream_av_request_camera_permission")
-		purego.RegisterLibFunc(&streamAVRequestMicPermission, avfHandle, "stream_av_request_microphone_permission")
-		purego.RegisterLibFunc(&streamAVVideoCaptureCreate, avfHandle, "stream_av_video_capture_create")
-		purego.RegisterLibFunc(&streamAVVideoCaptureStart, avfHandle, "stream_av_video_capture_start")
-		purego.RegisterLibFunc(&streamAVVideoCaptureStop, avfHandle, "stream_av_video_capture_stop")
-		purego.RegisterLibFunc(&streamAVVideoCaptureDestroy, avfHandle, "stream_av_video_capture_destroy")
-		purego.RegisterLibFunc(&streamAVGetError, avfHandle, "stream_av_get_error")
-		purego.RegisterLibFunc(&streamAVVideoDeviceFPSRange, avfHandle, "stream_av_video_device_fps_range")
+		purego.RegisterLibFunc(&mediaAVVideoDeviceCount, avfHandle, "media_av_video_device_count")
+		purego.RegisterLibFunc(&mediaAVAudioInputDeviceCount, avfHandle, "media_av_audio_input_device_count")
+		purego.RegisterLibFunc(&mediaAVVideoDeviceID, avfHandle, "media_av_video_device_id")
+		purego.RegisterLibFunc(&mediaAVVideoDeviceLabel, avfHandle, "media_av_video_device_label")
+		purego.RegisterLibFunc(&mediaAVAudioInputDeviceID, avfHandle, "media_av_audio_input_device_id")
+		purego.RegisterLibFunc(&mediaAVAudioInputDeviceLabel, avfHandle, "media_av_audio_input_device_label")
+		purego.RegisterLibFunc(&mediaAVFreeString, avfHandle, "media_av_free_string")
+		purego.RegisterLibFunc(&mediaAVCameraPermissionStatus, avfHandle, "media_av_camera_permission_status")
+		purego.RegisterLibFunc(&mediaAVMicrophonePermissionStatus, avfHandle, "media_av_microphone_permission_status")
+		purego.RegisterLibFunc(&mediaAVRequestCameraPermission, avfHandle, "media_av_request_camera_permission")
+		purego.RegisterLibFunc(&mediaAVRequestMicPermission, avfHandle, "media_av_request_microphone_permission")
+		purego.RegisterLibFunc(&mediaAVVideoCaptureCreate, avfHandle, "media_av_video_capture_create")
+		purego.RegisterLibFunc(&mediaAVVideoCaptureStart, avfHandle, "media_av_video_capture_start")
+		purego.RegisterLibFunc(&mediaAVVideoCaptureStop, avfHandle, "media_av_video_capture_stop")
+		purego.RegisterLibFunc(&mediaAVVideoCaptureDestroy, avfHandle, "media_av_video_capture_destroy")
+		purego.RegisterLibFunc(&mediaAVGetError, avfHandle, "media_av_get_error")
+		purego.RegisterLibFunc(&mediaAVVideoDeviceFPSRange, avfHandle, "media_av_video_device_fps_range")
 
 		avfLoaded = true
 	})
@@ -161,12 +161,12 @@ func (p *AVFoundationProvider) ListVideoDevices(ctx context.Context) ([]DeviceIn
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	count := streamAVVideoDeviceCount()
+	count := mediaAVVideoDeviceCount()
 	devices := make([]DeviceInfo, 0, count)
 
 	for i := int32(0); i < count; i++ {
-		idPtr := streamAVVideoDeviceID(i)
-		labelPtr := streamAVVideoDeviceLabel(i)
+		idPtr := mediaAVVideoDeviceID(i)
+		labelPtr := mediaAVVideoDeviceLabel(i)
 
 		if idPtr != 0 && labelPtr != 0 {
 			devices = append(devices, DeviceInfo{
@@ -174,8 +174,8 @@ func (p *AVFoundationProvider) ListVideoDevices(ctx context.Context) ([]DeviceIn
 				Label:    ptrToString(labelPtr),
 				Kind:     DeviceKindVideoInput,
 			})
-			streamAVFreeString(idPtr)
-			streamAVFreeString(labelPtr)
+			mediaAVFreeString(idPtr)
+			mediaAVFreeString(labelPtr)
 		}
 	}
 
@@ -191,12 +191,12 @@ func (p *AVFoundationProvider) ListAudioInputDevices(ctx context.Context) ([]Dev
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	count := streamAVAudioInputDeviceCount()
+	count := mediaAVAudioInputDeviceCount()
 	devices := make([]DeviceInfo, 0, count)
 
 	for i := int32(0); i < count; i++ {
-		idPtr := streamAVAudioInputDeviceID(i)
-		labelPtr := streamAVAudioInputDeviceLabel(i)
+		idPtr := mediaAVAudioInputDeviceID(i)
+		labelPtr := mediaAVAudioInputDeviceLabel(i)
 
 		if idPtr != 0 && labelPtr != 0 {
 			devices = append(devices, DeviceInfo{
@@ -204,8 +204,8 @@ func (p *AVFoundationProvider) ListAudioInputDevices(ctx context.Context) ([]Dev
 				Label:    ptrToString(labelPtr),
 				Kind:     DeviceKindAudioInput,
 			})
-			streamAVFreeString(idPtr)
-			streamAVFreeString(labelPtr)
+			mediaAVFreeString(idPtr)
+			mediaAVFreeString(labelPtr)
 		}
 	}
 
@@ -224,7 +224,7 @@ func CameraPermissionStatus() int {
 	if !avfLoaded {
 		return AVAuthorizationStatusNotDetermined
 	}
-	return int(streamAVCameraPermissionStatus())
+	return int(mediaAVCameraPermissionStatus())
 }
 
 // MicrophonePermissionStatus returns the current microphone permission status.
@@ -233,7 +233,7 @@ func MicrophonePermissionStatus() int {
 	if !avfLoaded {
 		return AVAuthorizationStatusNotDetermined
 	}
-	return int(streamAVMicrophonePermissionStatus())
+	return int(mediaAVMicrophonePermissionStatus())
 }
 
 // GetVideoDeviceFPSRange returns the min and max FPS supported by a video device.
@@ -251,14 +251,14 @@ func GetVideoDeviceFPSRange(deviceID string) (minFPS, maxFPS int, err error) {
 	}
 
 	var minVal, maxVal int32
-	result := streamAVVideoDeviceFPSRange(
+	result := mediaAVVideoDeviceFPSRange(
 		deviceIDPtr,
 		uintptr(unsafe.Pointer(&minVal)),
 		uintptr(unsafe.Pointer(&maxVal)),
 	)
 
 	if result != 0 {
-		errPtr := streamAVGetError()
+		errPtr := mediaAVGetError()
 		errMsg := "unknown error"
 		if errPtr != 0 {
 			errMsg = goStringFromPtr(errPtr)
@@ -273,7 +273,7 @@ func GetVideoDeviceFPSRange(deviceID string) (minFPS, maxFPS int, err error) {
 func RequestCameraPermission() {
 	initAVFoundation()
 	if avfLoaded {
-		streamAVRequestCameraPermission()
+		mediaAVRequestCameraPermission()
 	}
 }
 
@@ -281,7 +281,7 @@ func RequestCameraPermission() {
 func RequestMicrophonePermission() {
 	initAVFoundation()
 	if avfLoaded {
-		streamAVRequestMicPermission()
+		mediaAVRequestMicPermission()
 	}
 }
 
@@ -490,8 +490,8 @@ func (t *AVVideoCaptureTrack) Settings() VideoTrackSettings {
 
 func (t *AVVideoCaptureTrack) Close() error {
 	if t.handle != 0 {
-		streamAVVideoCaptureStop(t.handle)
-		streamAVVideoCaptureDestroy(t.handle)
+		mediaAVVideoCaptureStop(t.handle)
+		mediaAVVideoCaptureDestroy(t.handle)
 		t.handle = 0
 	}
 
@@ -530,10 +530,10 @@ func (p *AVFoundationProvider) OpenVideoDevice(ctx context.Context, deviceID str
 	}
 
 	// Check permission
-	status := streamAVCameraPermissionStatus()
+	status := mediaAVCameraPermissionStatus()
 	switch status {
 	case AVAuthorizationStatusNotDetermined:
-		streamAVRequestCameraPermission()
+		mediaAVRequestCameraPermission()
 		return nil, fmt.Errorf("camera permission not yet determined, please grant permission and try again")
 	case AVAuthorizationStatusDenied, AVAuthorizationStatusRestricted:
 		return nil, fmt.Errorf("camera permission denied")
@@ -572,7 +572,7 @@ func (p *AVFoundationProvider) OpenVideoDevice(ctx context.Context, deviceID str
 	}
 
 	// Create capture session
-	handle := streamAVVideoCaptureCreate(
+	handle := mediaAVVideoCaptureCreate(
 		deviceIDPtr,
 		int32(width),
 		int32(height),
@@ -582,7 +582,7 @@ func (p *AVFoundationProvider) OpenVideoDevice(ctx context.Context, deviceID str
 	)
 
 	if handle == 0 {
-		errPtr := streamAVGetError()
+		errPtr := mediaAVGetError()
 		errMsg := "unknown error"
 		if errPtr != 0 {
 			errMsg = goStringFromPtr(errPtr)
@@ -611,7 +611,7 @@ func (p *AVFoundationProvider) OpenVideoDevice(ctx context.Context, deviceID str
 	avCapturesMu.Unlock()
 
 	// Start capture
-	result := streamAVVideoCaptureStart(handle)
+	result := mediaAVVideoCaptureStart(handle)
 	if result != 0 {
 		track.Close()
 		return nil, fmt.Errorf("failed to start video capture")
@@ -627,10 +627,10 @@ func (p *AVFoundationProvider) OpenAudioDevice(ctx context.Context, deviceID str
 	}
 
 	// Check permission
-	status := streamAVMicrophonePermissionStatus()
+	status := mediaAVMicrophonePermissionStatus()
 	switch status {
 	case AVAuthorizationStatusNotDetermined:
-		streamAVRequestMicPermission()
+		mediaAVRequestMicPermission()
 		return nil, fmt.Errorf("microphone permission not yet determined, please grant permission and try again")
 	case AVAuthorizationStatusDenied, AVAuthorizationStatusRestricted:
 		return nil, fmt.Errorf("microphone permission denied")

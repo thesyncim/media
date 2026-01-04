@@ -52,7 +52,7 @@ build_libs() {
 run_tests() {
     log_info "Running tests on $OS/$ARCH..."
 
-    export STREAM_SDK_LIB_PATH="$BUILD_DIR"
+    export MEDIA_SDK_LIB_PATH="$BUILD_DIR"
 
     if [[ "$OS" == "Darwin" ]]; then
         export DYLD_LIBRARY_PATH="$BUILD_DIR:$DYLD_LIBRARY_PATH"
@@ -68,8 +68,8 @@ run_docker_tests() {
     log_info "Running tests in Linux Docker container..."
     cd "$PROJECT_ROOT"
 
-    docker build -f Dockerfile.test -t stream-media-test .
-    docker run --rm stream-media-test
+    docker build -f Dockerfile.test -t media-test .
+    docker run --rm media-test
 }
 
 show_help() {
@@ -90,11 +90,11 @@ show_help() {
     echo "  USE_SYSTEM_LIBS=1   Use system libraries (default on macOS)"
     echo ""
     echo "Libraries built:"
-    echo "  - libstream_vpx (VP8/VP9 encoding/decoding)"
-    echo "  - libstream_opus (Opus audio encoding/decoding)"
-    echo "  - libstream_avfoundation (macOS camera/mic - macOS only)"
-    echo "  - libstream_v4l2 (Linux camera via V4L2 - Linux only)"
-    echo "  - libstream_alsa (Linux audio via ALSA - Linux only)"
+    echo "  - libmedia_vpx (VP8/VP9 encoding/decoding)"
+    echo "  - libmedia_opus (Opus audio encoding/decoding)"
+    echo "  - libmedia_avfoundation (macOS camera/mic - macOS only)"
+    echo "  - libmedia_v4l2 (Linux camera via V4L2 - Linux only)"
+    echo "  - libmedia_alsa (Linux audio via ALSA - Linux only)"
     echo ""
     echo "Platform: $OS/$ARCH"
 }

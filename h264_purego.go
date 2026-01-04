@@ -1,6 +1,6 @@
 //go:build (darwin || linux) && !noh264 && !cgo
 
-// Package media provides H.264 codec support via libstream_h264 using purego.
+// Package media provides H.264 codec support via libmedia_h264 using purego.
 
 package media
 
@@ -18,84 +18,84 @@ import (
 )
 
 var (
-	streamH264Once    sync.Once
-	streamH264Handle  uintptr
-	streamH264InitErr error
-	streamH264Loaded  bool
+	mediaH264Once    sync.Once
+	mediaH264Handle  uintptr
+	mediaH264InitErr error
+	mediaH264Loaded  bool
 )
 
-// libstream_h264 function pointers
+// libmedia_h264 function pointers
 var (
-	streamH264EncoderCreate       func(width, height, fps, bitrateKbps, profile, threads int32) uint64
-	streamH264EncoderEncode       func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts, outDts uintptr) int32
-	streamH264EncoderMaxOutputSize func(encoder uint64) int32
-	streamH264EncoderRequestKF    func(encoder uint64)
-	streamH264EncoderSetBitrate   func(encoder uint64, bitrateKbps int32) int32
-	streamH264EncoderGetSPSPPS    func(encoder uint64, spsOut uintptr, spsCapacity int32, spsLen uintptr, ppsOut uintptr, ppsCapacity int32, ppsLen uintptr) int32
-	streamH264EncoderGetStats     func(encoder uint64, framesEncoded, keyframesEncoded, bytesEncoded uintptr)
-	streamH264EncoderDestroy      func(encoder uint64)
+	mediaH264EncoderCreate       func(width, height, fps, bitrateKbps, profile, threads int32) uint64
+	mediaH264EncoderEncode       func(encoder uint64, yPlane, uPlane, vPlane uintptr, yStride, uvStride, forceKeyframe int32, outData uintptr, outCapacity int32, outFrameType, outPts, outDts uintptr) int32
+	mediaH264EncoderMaxOutputSize func(encoder uint64) int32
+	mediaH264EncoderRequestKF    func(encoder uint64)
+	mediaH264EncoderSetBitrate   func(encoder uint64, bitrateKbps int32) int32
+	mediaH264EncoderGetSPSPPS    func(encoder uint64, spsOut uintptr, spsCapacity int32, spsLen uintptr, ppsOut uintptr, ppsCapacity int32, ppsLen uintptr) int32
+	mediaH264EncoderGetStats     func(encoder uint64, framesEncoded, keyframesEncoded, bytesEncoded uintptr)
+	mediaH264EncoderDestroy      func(encoder uint64)
 
-	streamH264DecoderCreate        func(threads int32) uint64
-	streamH264DecoderDecode        func(decoder uint64, data uintptr, dataLen int32, outY, outU, outV, outYStride, outUVStride, outWidth, outHeight uintptr) int32
-	streamH264DecoderGetDimensions func(decoder uint64, width, height uintptr)
-	streamH264DecoderGetStats      func(decoder uint64, framesDecoded, keyframesDecoded, bytesDecoded, corruptedFrames uintptr)
-	streamH264DecoderReset         func(decoder uint64) int32
-	streamH264DecoderDestroy       func(decoder uint64)
+	mediaH264DecoderCreate        func(threads int32) uint64
+	mediaH264DecoderDecode        func(decoder uint64, data uintptr, dataLen int32, outY, outU, outV, outYStride, outUVStride, outWidth, outHeight uintptr) int32
+	mediaH264DecoderGetDimensions func(decoder uint64, width, height uintptr)
+	mediaH264DecoderGetStats      func(decoder uint64, framesDecoded, keyframesDecoded, bytesDecoded, corruptedFrames uintptr)
+	mediaH264DecoderReset         func(decoder uint64) int32
+	mediaH264DecoderDestroy       func(decoder uint64)
 
-	streamH264GetError         func() uintptr
-	streamH264EncoderAvailable func() int32
-	streamH264DecoderAvailable func() int32
+	mediaH264GetError         func() uintptr
+	mediaH264EncoderAvailable func() int32
+	mediaH264DecoderAvailable func() int32
 )
 
-// Constants from stream_h264.h
+// Constants from media_h264.h
 const (
-	streamH264ProfileBaseline = 66
-	streamH264ProfileMain     = 77
-	streamH264ProfileHigh     = 100
+	mediaH264ProfileBaseline = 66
+	mediaH264ProfileMain     = 77
+	mediaH264ProfileHigh     = 100
 
-	streamH264FrameI   = 0
-	streamH264FrameP   = 1
-	streamH264FrameB   = 2
-	streamH264FrameIDR = 3
+	mediaH264FrameI   = 0
+	mediaH264FrameP   = 1
+	mediaH264FrameB   = 2
+	mediaH264FrameIDR = 3
 
-	streamH264OK           = 0
-	streamH264Error        = -1
-	streamH264ErrorNoMem   = -2
-	streamH264ErrorInvalid = -3
-	streamH264ErrorCodec   = -4
+	mediaH264OK           = 0
+	mediaH264Error        = -1
+	mediaH264ErrorNoMem   = -2
+	mediaH264ErrorInvalid = -3
+	mediaH264ErrorCodec   = -4
 )
 
-// h264ProfileToStreamPurego converts H264Profile to stream_h264 profile constant.
+// h264ProfileToStreamPurego converts H264Profile to media_h264 profile constant.
 func h264ProfileToStreamPurego(p H264Profile) int {
 	switch p {
 	case H264ProfileMain:
-		return streamH264ProfileMain
+		return mediaH264ProfileMain
 	case H264ProfileHigh:
-		return streamH264ProfileHigh
+		return mediaH264ProfileHigh
 	default:
-		return streamH264ProfileBaseline
+		return mediaH264ProfileBaseline
 	}
 }
 
-func loadStreamH264() error {
-	streamH264Once.Do(func() {
-		streamH264InitErr = loadStreamH264Lib()
-		if streamH264InitErr == nil {
-			streamH264Loaded = true
+func loadMediaH264() error {
+	mediaH264Once.Do(func() {
+		mediaH264InitErr = loadMediaH264Lib()
+		if mediaH264InitErr == nil {
+			mediaH264Loaded = true
 		}
 	})
-	return streamH264InitErr
+	return mediaH264InitErr
 }
 
-func loadStreamH264Lib() error {
-	paths := getStreamH264LibPaths()
+func loadMediaH264Lib() error {
+	paths := getMediaH264LibPaths()
 
 	var lastErr error
 	for _, path := range paths {
 		handle, err := purego.Dlopen(path, purego.RTLD_NOW|purego.RTLD_GLOBAL)
 		if err == nil {
-			streamH264Handle = handle
-			if err := loadStreamH264Symbols(); err != nil {
+			mediaH264Handle = handle
+			if err := loadMediaH264Symbols(); err != nil {
 				purego.Dlclose(handle)
 				lastErr = err
 				continue
@@ -106,24 +106,24 @@ func loadStreamH264Lib() error {
 	}
 
 	if lastErr != nil {
-		return fmt.Errorf("failed to load libstream_h264: %w", lastErr)
+		return fmt.Errorf("failed to load libmedia_h264: %w", lastErr)
 	}
-	return errors.New("libstream_h264 not found in any standard location")
+	return errors.New("libmedia_h264 not found in any standard location")
 }
 
-func getStreamH264LibPaths() []string {
+func getMediaH264LibPaths() []string {
 	var paths []string
 
-	libName := "libstream_h264.so"
+	libName := "libmedia_h264.so"
 	if runtime.GOOS == "darwin" {
-		libName = "libstream_h264.dylib"
+		libName = "libmedia_h264.dylib"
 	}
 
 	// Environment variable overrides (highest priority)
-	if envPath := os.Getenv("STREAM_H264_LIB_PATH"); envPath != "" {
+	if envPath := os.Getenv("MEDIA_H264_LIB_PATH"); envPath != "" {
 		paths = append(paths, envPath)
 	}
-	if envPath := os.Getenv("STREAM_SDK_LIB_PATH"); envPath != "" {
+	if envPath := os.Getenv("MEDIA_SDK_LIB_PATH"); envPath != "" {
 		paths = append(paths, filepath.Join(envPath, libName))
 	}
 
@@ -187,51 +187,51 @@ func getStreamH264LibPaths() []string {
 	switch runtime.GOOS {
 	case "darwin":
 		paths = append(paths,
-			"libstream_h264.dylib",
-			"/usr/local/lib/libstream_h264.dylib",
-			"/opt/homebrew/lib/libstream_h264.dylib",
+			"libmedia_h264.dylib",
+			"/usr/local/lib/libmedia_h264.dylib",
+			"/opt/homebrew/lib/libmedia_h264.dylib",
 		)
 	case "linux":
 		paths = append(paths,
-			"libstream_h264.so",
-			"/usr/local/lib/libstream_h264.so",
-			"/usr/lib/libstream_h264.so",
+			"libmedia_h264.so",
+			"/usr/local/lib/libmedia_h264.so",
+			"/usr/lib/libmedia_h264.so",
 		)
 	}
 
 	return paths
 }
 
-func loadStreamH264Symbols() error {
-	purego.RegisterLibFunc(&streamH264EncoderCreate, streamH264Handle, "stream_h264_encoder_create")
-	purego.RegisterLibFunc(&streamH264EncoderEncode, streamH264Handle, "stream_h264_encoder_encode")
-	purego.RegisterLibFunc(&streamH264EncoderMaxOutputSize, streamH264Handle, "stream_h264_encoder_max_output_size")
-	purego.RegisterLibFunc(&streamH264EncoderRequestKF, streamH264Handle, "stream_h264_encoder_request_keyframe")
-	purego.RegisterLibFunc(&streamH264EncoderSetBitrate, streamH264Handle, "stream_h264_encoder_set_bitrate")
-	purego.RegisterLibFunc(&streamH264EncoderGetSPSPPS, streamH264Handle, "stream_h264_encoder_get_sps_pps")
-	purego.RegisterLibFunc(&streamH264EncoderGetStats, streamH264Handle, "stream_h264_encoder_get_stats")
-	purego.RegisterLibFunc(&streamH264EncoderDestroy, streamH264Handle, "stream_h264_encoder_destroy")
+func loadMediaH264Symbols() error {
+	purego.RegisterLibFunc(&mediaH264EncoderCreate, mediaH264Handle, "media_h264_encoder_create")
+	purego.RegisterLibFunc(&mediaH264EncoderEncode, mediaH264Handle, "media_h264_encoder_encode")
+	purego.RegisterLibFunc(&mediaH264EncoderMaxOutputSize, mediaH264Handle, "media_h264_encoder_max_output_size")
+	purego.RegisterLibFunc(&mediaH264EncoderRequestKF, mediaH264Handle, "media_h264_encoder_request_keyframe")
+	purego.RegisterLibFunc(&mediaH264EncoderSetBitrate, mediaH264Handle, "media_h264_encoder_set_bitrate")
+	purego.RegisterLibFunc(&mediaH264EncoderGetSPSPPS, mediaH264Handle, "media_h264_encoder_get_sps_pps")
+	purego.RegisterLibFunc(&mediaH264EncoderGetStats, mediaH264Handle, "media_h264_encoder_get_stats")
+	purego.RegisterLibFunc(&mediaH264EncoderDestroy, mediaH264Handle, "media_h264_encoder_destroy")
 
-	purego.RegisterLibFunc(&streamH264DecoderCreate, streamH264Handle, "stream_h264_decoder_create")
-	purego.RegisterLibFunc(&streamH264DecoderDecode, streamH264Handle, "stream_h264_decoder_decode")
-	purego.RegisterLibFunc(&streamH264DecoderGetDimensions, streamH264Handle, "stream_h264_decoder_get_dimensions")
-	purego.RegisterLibFunc(&streamH264DecoderGetStats, streamH264Handle, "stream_h264_decoder_get_stats")
-	purego.RegisterLibFunc(&streamH264DecoderReset, streamH264Handle, "stream_h264_decoder_reset")
-	purego.RegisterLibFunc(&streamH264DecoderDestroy, streamH264Handle, "stream_h264_decoder_destroy")
+	purego.RegisterLibFunc(&mediaH264DecoderCreate, mediaH264Handle, "media_h264_decoder_create")
+	purego.RegisterLibFunc(&mediaH264DecoderDecode, mediaH264Handle, "media_h264_decoder_decode")
+	purego.RegisterLibFunc(&mediaH264DecoderGetDimensions, mediaH264Handle, "media_h264_decoder_get_dimensions")
+	purego.RegisterLibFunc(&mediaH264DecoderGetStats, mediaH264Handle, "media_h264_decoder_get_stats")
+	purego.RegisterLibFunc(&mediaH264DecoderReset, mediaH264Handle, "media_h264_decoder_reset")
+	purego.RegisterLibFunc(&mediaH264DecoderDestroy, mediaH264Handle, "media_h264_decoder_destroy")
 
-	purego.RegisterLibFunc(&streamH264GetError, streamH264Handle, "stream_h264_get_error")
-	purego.RegisterLibFunc(&streamH264EncoderAvailable, streamH264Handle, "stream_h264_encoder_available")
-	purego.RegisterLibFunc(&streamH264DecoderAvailable, streamH264Handle, "stream_h264_decoder_available")
+	purego.RegisterLibFunc(&mediaH264GetError, mediaH264Handle, "media_h264_get_error")
+	purego.RegisterLibFunc(&mediaH264EncoderAvailable, mediaH264Handle, "media_h264_encoder_available")
+	purego.RegisterLibFunc(&mediaH264DecoderAvailable, mediaH264Handle, "media_h264_decoder_available")
 
 	return nil
 }
 
-// IsH264Available checks if libstream_h264 is available.
+// IsH264Available checks if libmedia_h264 is available.
 func IsH264Available() bool {
-	if err := loadStreamH264(); err != nil {
+	if err := loadMediaH264(); err != nil {
 		return false
 	}
-	return streamH264Loaded
+	return mediaH264Loaded
 }
 
 // IsH264EncoderAvailable checks if H.264 encoder is available.
@@ -239,7 +239,7 @@ func IsH264EncoderAvailable() bool {
 	if !IsH264Available() {
 		return false
 	}
-	return streamH264EncoderAvailable() != 0
+	return mediaH264EncoderAvailable() != 0
 }
 
 // IsH264DecoderAvailable checks if H.264 decoder is available.
@@ -247,11 +247,11 @@ func IsH264DecoderAvailable() bool {
 	if !IsH264Available() {
 		return false
 	}
-	return streamH264DecoderAvailable() != 0
+	return mediaH264DecoderAvailable() != 0
 }
 
 func getH264Error() string {
-	ptr := streamH264GetError()
+	ptr := mediaH264GetError()
 	if ptr == 0 {
 		return "unknown error"
 	}
@@ -279,11 +279,11 @@ type H264Encoder struct {
 
 // NewH264Encoder creates a new H.264 encoder.
 func NewH264Encoder(config VideoEncoderConfig) (*H264Encoder, error) {
-	if err := loadStreamH264(); err != nil {
+	if err := loadMediaH264(); err != nil {
 		return nil, fmt.Errorf("H.264 encoder not available: %w", err)
 	}
 
-	if streamH264EncoderAvailable() == 0 {
+	if mediaH264EncoderAvailable() == 0 {
 		return nil, errors.New("H.264 encoder not available (x264 not compiled)")
 	}
 
@@ -307,7 +307,7 @@ func NewH264Encoder(config VideoEncoderConfig) (*H264Encoder, error) {
 		fps = 30
 	}
 
-	handle := streamH264EncoderCreate(
+	handle := mediaH264EncoderCreate(
 		int32(config.Width),
 		int32(config.Height),
 		int32(fps),
@@ -320,7 +320,7 @@ func NewH264Encoder(config VideoEncoderConfig) (*H264Encoder, error) {
 		return nil, fmt.Errorf("failed to create H.264 encoder: %s", getH264Error())
 	}
 
-	maxOutput := streamH264EncoderMaxOutputSize(handle)
+	maxOutput := mediaH264EncoderMaxOutputSize(handle)
 	if maxOutput <= 0 {
 		maxOutput = int32(config.Width * config.Height * 3 / 2)
 	}
@@ -344,7 +344,7 @@ func (e *H264Encoder) extractSPSPPS() {
 	ppsOut := make([]byte, 256)
 	var spsLen, ppsLen int32
 
-	streamH264EncoderGetSPSPPS(
+	mediaH264EncoderGetSPSPPS(
 		e.handle,
 		uintptr(unsafe.Pointer(&spsOut[0])), 256, uintptr(unsafe.Pointer(&spsLen)),
 		uintptr(unsafe.Pointer(&ppsOut[0])), 256, uintptr(unsafe.Pointer(&ppsLen)),
@@ -387,7 +387,7 @@ func (e *H264Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	var frameType int32
 	var pts, dts int64
 
-	result := streamH264EncoderEncode(
+	result := mediaH264EncoderEncode(
 		e.handle,
 		uintptr(unsafe.Pointer(&frame.Data[0][0])),
 		uintptr(unsafe.Pointer(&frame.Data[1][0])),
@@ -414,7 +414,7 @@ func (e *H264Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	copy(data, e.outputBuf[:result])
 
 	ft := FrameTypeDelta
-	if frameType == streamH264FrameIDR || frameType == streamH264FrameI {
+	if frameType == mediaH264FrameIDR || frameType == mediaH264FrameI {
 		ft = FrameTypeKey
 	}
 
@@ -444,7 +444,7 @@ func (e *H264Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 func (e *H264Encoder) RequestKeyframe() {
 	e.keyframeReq.Store(true)
 	if e.handle != 0 {
-		streamH264EncoderRequestKF(e.handle)
+		mediaH264EncoderRequestKF(e.handle)
 	}
 }
 
@@ -458,7 +458,7 @@ func (e *H264Encoder) SetBitrate(bitrateBps int) error {
 	}
 
 	bitrateKbps := int32(bitrateBps / 1000)
-	if streamH264EncoderSetBitrate(e.handle, bitrateKbps) != streamH264OK {
+	if mediaH264EncoderSetBitrate(e.handle, bitrateKbps) != mediaH264OK {
 		return fmt.Errorf("failed to set bitrate: %s", getH264Error())
 	}
 
@@ -494,7 +494,7 @@ func (e *H264Encoder) Close() error {
 	defer e.mu.Unlock()
 
 	if e.handle != 0 {
-		streamH264EncoderDestroy(e.handle)
+		mediaH264EncoderDestroy(e.handle)
 		e.handle = 0
 	}
 
@@ -517,11 +517,11 @@ type H264Decoder struct {
 
 // NewH264Decoder creates a new H.264 decoder.
 func NewH264Decoder(config VideoDecoderConfig) (*H264Decoder, error) {
-	if err := loadStreamH264(); err != nil {
+	if err := loadMediaH264(); err != nil {
 		return nil, fmt.Errorf("H.264 decoder not available: %w", err)
 	}
 
-	if streamH264DecoderAvailable() == 0 {
+	if mediaH264DecoderAvailable() == 0 {
 		return nil, errors.New("H.264 decoder not available")
 	}
 
@@ -530,7 +530,7 @@ func NewH264Decoder(config VideoDecoderConfig) (*H264Decoder, error) {
 		threads = int32(config.Threads)
 	}
 
-	handle := streamH264DecoderCreate(threads)
+	handle := mediaH264DecoderCreate(threads)
 	if handle == 0 {
 		return nil, fmt.Errorf("failed to create H.264 decoder: %s", getH264Error())
 	}
@@ -553,7 +553,7 @@ func (d *H264Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 	var outY, outU, outV uintptr
 	var outYStride, outUVStride, outWidth, outHeight int32
 
-	result := streamH264DecoderDecode(
+	result := mediaH264DecoderDecode(
 		d.handle,
 		uintptr(unsafe.Pointer(&encoded.Data[0])),
 		int32(len(encoded.Data)),
@@ -660,7 +660,7 @@ func (d *H264Decoder) Reset() error {
 		return fmt.Errorf("decoder not initialized")
 	}
 
-	if streamH264DecoderReset(d.handle) != streamH264OK {
+	if mediaH264DecoderReset(d.handle) != mediaH264OK {
 		return fmt.Errorf("failed to reset decoder: %s", getH264Error())
 	}
 
@@ -674,7 +674,7 @@ func (d *H264Decoder) GetDimensions() (width, height int) {
 
 	if d.handle != 0 {
 		var w, h int32
-		streamH264DecoderGetDimensions(d.handle, uintptr(unsafe.Pointer(&w)), uintptr(unsafe.Pointer(&h)))
+		mediaH264DecoderGetDimensions(d.handle, uintptr(unsafe.Pointer(&w)), uintptr(unsafe.Pointer(&h)))
 		return int(w), int(h)
 	}
 	return d.width, d.height
@@ -686,7 +686,7 @@ func (d *H264Decoder) Close() error {
 	defer d.mu.Unlock()
 
 	if d.handle != 0 {
-		streamH264DecoderDestroy(d.handle)
+		mediaH264DecoderDestroy(d.handle)
 		d.handle = 0
 	}
 

@@ -1,9 +1,9 @@
-// stream_compositor.c - High-performance video compositing
+// media_compositor.c - High-performance video compositing
 //
 // SIMD-optimized blending for ARM NEON and x86 SSE/AVX.
-// Compile: cc -shared -fPIC -O3 -o libstream_compositor.dylib stream_compositor.c
+// Compile: cc -shared -fPIC -O3 -o libmedia_compositor.dylib media_compositor.c
 
-#include "stream_compositor.h"
+#include "media_compositor.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -17,7 +17,7 @@
 #endif
 
 // Compositor structure
-struct StreamCompositor {
+struct MediaCompositor {
     int32_t width;
     int32_t height;
     int32_t stride_y;
@@ -57,8 +57,8 @@ static inline uint8_t blend_multiply(uint8_t dst, uint8_t src, uint8_t alpha) {
     return blend_over(dst, blended, alpha);
 }
 
-StreamCompositor* stream_compositor_create(int32_t width, int32_t height) {
-    StreamCompositor* comp = (StreamCompositor*)calloc(1, sizeof(StreamCompositor));
+MediaCompositor* media_compositor_create(int32_t width, int32_t height) {
+    MediaCompositor* comp = (MediaCompositor*)calloc(1, sizeof(MediaCompositor));
     if (!comp) return NULL;
 
     // Ensure dimensions are even for YUV420
@@ -78,17 +78,17 @@ StreamCompositor* stream_compositor_create(int32_t width, int32_t height) {
     comp->canvas_v = (uint8_t*)aligned_alloc(16, size_uv);
 
     if (!comp->canvas_y || !comp->canvas_u || !comp->canvas_v) {
-        stream_compositor_destroy(comp);
+        media_compositor_destroy(comp);
         return NULL;
     }
 
     // Initialize to black
-    stream_compositor_clear(comp, 16, 128, 128);
+    media_compositor_clear(comp, 16, 128, 128);
 
     return comp;
 }
 
-void stream_compositor_destroy(StreamCompositor* comp) {
+void media_compositor_destroy(MediaCompositor* comp) {
     if (!comp) return;
     free(comp->canvas_y);
     free(comp->canvas_u);
@@ -99,7 +99,7 @@ void stream_compositor_destroy(StreamCompositor* comp) {
     free(comp);
 }
 
-void stream_compositor_clear(StreamCompositor* comp, uint8_t y, uint8_t u, uint8_t v) {
+void media_compositor_clear(MediaCompositor* comp, uint8_t y, uint8_t u, uint8_t v) {
     if (!comp) return;
 
     size_t size_y = comp->stride_y * comp->height;
@@ -110,7 +110,7 @@ void stream_compositor_clear(StreamCompositor* comp, uint8_t y, uint8_t u, uint8
     memset(comp->canvas_v, v, size_uv);
 }
 
-void stream_fill_yuv(
+void media_fill_yuv(
     uint8_t* dst_y, uint8_t* dst_u, uint8_t* dst_v,
     int32_t x, int32_t y, int32_t w, int32_t h,
     int32_t stride_y, int32_t stride_uv,
@@ -136,7 +136,7 @@ void stream_fill_yuv(
 // SIMD-optimized alpha blending for NEON
 #ifdef USE_NEON
 static void blend_row_neon(uint8_t* dst, const uint8_t* src, const uint8_t* alpha,
-                           uint8_t global_alpha, int32_t width, StreamBlendMode mode) {
+                           uint8_t global_alpha, int32_t width, MediaBlendMode mode) {
     int32_t i = 0;
 
     // Process 16 pixels at a time
@@ -185,7 +185,7 @@ static void blend_row_neon(uint8_t* dst, const uint8_t* src, const uint8_t* alph
 // SSE2 version
 #ifdef USE_SSE2
 static void blend_row_sse2(uint8_t* dst, const uint8_t* src, const uint8_t* alpha,
-                           uint8_t global_alpha, int32_t width, StreamBlendMode mode) {
+                           uint8_t global_alpha, int32_t width, MediaBlendMode mode) {
     int32_t i = 0;
     __m128i zero = _mm_setzero_si128();
     __m128i ga = _mm_set1_epi16(global_alpha);
@@ -245,7 +245,7 @@ static void blend_row_sse2(uint8_t* dst, const uint8_t* src, const uint8_t* alph
 
 // Scalar blending fallback
 static void blend_row_scalar(uint8_t* dst, const uint8_t* src, const uint8_t* alpha,
-                             uint8_t global_alpha, int32_t width, StreamBlendMode mode) {
+                             uint8_t global_alpha, int32_t width, MediaBlendMode mode) {
     for (int32_t i = 0; i < width; i++) {
         uint8_t a = alpha ? ((alpha[i] * global_alpha + 127) / 255) : global_alpha;
 
@@ -268,7 +268,7 @@ static void blend_row_scalar(uint8_t* dst, const uint8_t* src, const uint8_t* al
 
 // Choose best blend function
 static void blend_row(uint8_t* dst, const uint8_t* src, const uint8_t* alpha,
-                      uint8_t global_alpha, int32_t width, StreamBlendMode mode) {
+                      uint8_t global_alpha, int32_t width, MediaBlendMode mode) {
     if (mode == BLEND_MODE_COPY && global_alpha == 255) {
         memcpy(dst, src, width);
         return;
@@ -289,7 +289,7 @@ static void blend_row(uint8_t* dst, const uint8_t* src, const uint8_t* alpha,
     blend_row_scalar(dst, src, alpha, global_alpha, width, mode);
 }
 
-void stream_blend_yuv_alpha(
+void media_blend_yuv_alpha(
     uint8_t* dst_y, uint8_t* dst_u, uint8_t* dst_v,
     const uint8_t* src_y, const uint8_t* src_u, const uint8_t* src_v,
     const uint8_t* alpha,
@@ -298,7 +298,7 @@ void stream_blend_yuv_alpha(
     int32_t w, int32_t h,
     int32_t dst_stride_y, int32_t dst_stride_uv,
     int32_t src_stride_y, int32_t src_stride_uv,
-    StreamBlendMode mode
+    MediaBlendMode mode
 ) {
     // Ensure even dimensions
     w = w & ~1;
@@ -349,7 +349,7 @@ void stream_blend_yuv_alpha(
 }
 
 // Bilinear scaling
-void stream_scale_yuv_bilinear(
+void media_scale_yuv_bilinear(
     uint8_t* dst_y, uint8_t* dst_u, uint8_t* dst_v,
     const uint8_t* src_y, const uint8_t* src_u, const uint8_t* src_v,
     int32_t src_w, int32_t src_h,
@@ -440,7 +440,7 @@ void stream_scale_yuv_bilinear(
 }
 
 // Ensure scratch buffer is large enough
-static void ensure_scratch(StreamCompositor* comp, int32_t w, int32_t h) {
+static void ensure_scratch(MediaCompositor* comp, int32_t w, int32_t h) {
     int32_t stride_y = (w + 15) & ~15;
     int32_t stride_uv = ((w / 2) + 15) & ~15;
     size_t needed = stride_y * h + stride_uv * (h / 2) * 2;
@@ -457,13 +457,13 @@ static void ensure_scratch(StreamCompositor* comp, int32_t w, int32_t h) {
     }
 }
 
-void stream_compositor_blend_layer(
-    StreamCompositor* comp,
+void media_compositor_blend_layer(
+    MediaCompositor* comp,
     const uint8_t* src_y, const uint8_t* src_u, const uint8_t* src_v,
     const uint8_t* src_a,
     int32_t src_w, int32_t src_h,
     int32_t src_stride_y, int32_t src_stride_uv,
-    const StreamLayerConfig* config
+    const MediaLayerConfig* config
 ) {
     if (!comp || !config || !config->visible) return;
     if (!src_y || !src_u || !src_v) return;
@@ -504,7 +504,7 @@ void stream_compositor_blend_layer(
         int32_t scratch_stride_y = (dst_w + 15) & ~15;
         int32_t scratch_stride_uv = ((dst_w / 2) + 15) & ~15;
 
-        stream_scale_yuv_bilinear(
+        media_scale_yuv_bilinear(
             comp->scratch_y, comp->scratch_u, comp->scratch_v,
             src_y, src_u, src_v,
             src_w, src_h, dst_w, dst_h,
@@ -523,7 +523,7 @@ void stream_compositor_blend_layer(
     uint8_t global_alpha = (uint8_t)(config->alpha * 255.0f);
     if (global_alpha == 0) return;
 
-    stream_blend_yuv_alpha(
+    media_blend_yuv_alpha(
         comp->canvas_y, comp->canvas_u, comp->canvas_v,
         blend_y, blend_u, blend_v,
         src_a,
@@ -535,8 +535,8 @@ void stream_compositor_blend_layer(
     );
 }
 
-void stream_compositor_get_result(
-    StreamCompositor* comp,
+void media_compositor_get_result(
+    MediaCompositor* comp,
     const uint8_t** out_y, const uint8_t** out_u, const uint8_t** out_v,
     int32_t* out_stride_y, int32_t* out_stride_uv
 ) {
@@ -548,14 +548,14 @@ void stream_compositor_get_result(
     if (out_stride_uv) *out_stride_uv = comp->stride_uv;
 }
 
-void stream_compositor_get_size(StreamCompositor* comp, int32_t* width, int32_t* height) {
+void media_compositor_get_size(MediaCompositor* comp, int32_t* width, int32_t* height) {
     if (!comp) return;
     if (width) *width = comp->width;
     if (height) *height = comp->height;
 }
 
 // RGBA to YUVA conversion using BT.601
-void stream_rgba_to_yuva(
+void media_rgba_to_yuva(
     uint8_t* dst_y, uint8_t* dst_u, uint8_t* dst_v, uint8_t* dst_a,
     const uint8_t* src_rgba,
     int32_t width, int32_t height,

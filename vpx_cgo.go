@@ -1,8 +1,8 @@
 //go:build (darwin || linux) && !novpx && cgo
 
-// Package media provides VP8/VP9 codec support via libstream_vpx using CGO.
+// Package media provides VP8/VP9 codec support via libmedia_vpx using CGO.
 //
-// This implementation uses CGO to link directly against libstream_vpx,
+// This implementation uses CGO to link directly against libmedia_vpx,
 // providing better performance than the purego variant by eliminating
 // function pointer indirection overhead.
 
@@ -10,10 +10,10 @@ package media
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/clib
-#cgo darwin LDFLAGS: -L${SRCDIR}/build -lstream_vpx -Wl,-rpath,${SRCDIR}/build
-#cgo linux LDFLAGS: -L${SRCDIR}/build -lstream_vpx -Wl,-rpath,${SRCDIR}/build
+#cgo darwin LDFLAGS: -L${SRCDIR}/build -lmedia_vpx -Wl,-rpath,${SRCDIR}/build
+#cgo linux LDFLAGS: -L${SRCDIR}/build -lmedia_vpx -Wl,-rpath,${SRCDIR}/build
 
-#include "stream_vpx.h"
+#include "media_vpx.h"
 #include <stdlib.h>
 */
 import "C"
@@ -25,22 +25,22 @@ import (
 	"unsafe"
 )
 
-// Constants from stream_vpx.h
+// Constants from media_vpx.h
 const (
-	streamVPXCodecVP8 = C.STREAM_VPX_CODEC_VP8
-	streamVPXCodecVP9 = C.STREAM_VPX_CODEC_VP9
+	streamVPXCodecVP8 = C.MEDIA_VPX_CODEC_VP8
+	streamVPXCodecVP9 = C.MEDIA_VPX_CODEC_VP9
 
-	streamVPXFrameKey   = C.STREAM_VPX_FRAME_KEY
-	streamVPXFrameDelta = C.STREAM_VPX_FRAME_DELTA
+	streamVPXFrameKey   = C.MEDIA_VPX_FRAME_KEY
+	streamVPXFrameDelta = C.MEDIA_VPX_FRAME_DELTA
 
-	streamVPXOK           = C.STREAM_VPX_OK
-	streamVPXError        = C.STREAM_VPX_ERROR
-	streamVPXErrorNoMem   = C.STREAM_VPX_ERROR_NOMEM
-	streamVPXErrorInvalid = C.STREAM_VPX_ERROR_INVALID
-	streamVPXErrorCodec   = C.STREAM_VPX_ERROR_CODEC
+	streamVPXOK           = C.MEDIA_VPX_OK
+	streamVPXError        = C.MEDIA_VPX_ERROR
+	streamVPXErrorNoMem   = C.MEDIA_VPX_ERROR_NOMEM
+	streamVPXErrorInvalid = C.MEDIA_VPX_ERROR_INVALID
+	streamVPXErrorCodec   = C.MEDIA_VPX_ERROR_CODEC
 )
 
-// IsVPXAvailable checks if libstream_vpx is available.
+// IsVPXAvailable checks if libmedia_vpx is available.
 // With CGO this is always true since it links at compile time.
 func IsVPXAvailable() bool {
 	return true
@@ -48,28 +48,28 @@ func IsVPXAvailable() bool {
 
 // IsVP8Available checks if VP8 codec is available.
 func IsVP8Available() bool {
-	return C.stream_vpx_codec_available(C.int(streamVPXCodecVP8)) != 0
+	return C.media_vpx_codec_available(C.int(streamVPXCodecVP8)) != 0
 }
 
 // IsVP9Available checks if VP9 codec is available.
 func IsVP9Available() bool {
-	return C.stream_vpx_codec_available(C.int(streamVPXCodecVP9)) != 0
+	return C.media_vpx_codec_available(C.int(streamVPXCodecVP9)) != 0
 }
 
 func getVPXError() string {
-	cstr := C.stream_vpx_get_error()
+	cstr := C.media_vpx_get_error()
 	if cstr == nil {
 		return "unknown error"
 	}
 	return C.GoString(cstr)
 }
 
-// VPXEncoder implements VideoEncoder using libstream_vpx via CGO.
+// VPXEncoder implements VideoEncoder using libmedia_vpx via CGO.
 type VPXEncoder struct {
 	config VideoEncoderConfig
 	codec  VideoCodec
 
-	handle    C.stream_vpx_encoder_t
+	handle    C.media_vpx_encoder_t
 	outputBuf []byte
 
 	stats   EncoderStats
@@ -98,9 +98,9 @@ func newVPXEncoder(config VideoEncoderConfig, codec VideoCodec) (*VPXEncoder, er
 	var codecType C.int
 	switch codec {
 	case VideoCodecVP8:
-		codecType = C.STREAM_VPX_CODEC_VP8
+		codecType = C.MEDIA_VPX_CODEC_VP8
 	case VideoCodecVP9:
-		codecType = C.STREAM_VPX_CODEC_VP9
+		codecType = C.MEDIA_VPX_CODEC_VP9
 	default:
 		return nil, fmt.Errorf("unsupported codec: %s", codec)
 	}
@@ -129,11 +129,11 @@ func newVPXEncoder(config VideoEncoderConfig, codec VideoCodec) (*VPXEncoder, er
 		spatialLayers = 1
 	}
 
-	var handle C.stream_vpx_encoder_t
+	var handle C.media_vpx_encoder_t
 	svcEnabled := temporalLayers > 1 || spatialLayers > 1
 
 	if svcEnabled {
-		handle = C.stream_vpx_encoder_create_svc(
+		handle = C.media_vpx_encoder_create_svc(
 			codecType,
 			C.int(config.Width),
 			C.int(config.Height),
@@ -144,7 +144,7 @@ func newVPXEncoder(config VideoEncoderConfig, codec VideoCodec) (*VPXEncoder, er
 			C.int(spatialLayers),
 		)
 	} else {
-		handle = C.stream_vpx_encoder_create(
+		handle = C.media_vpx_encoder_create(
 			codecType,
 			C.int(config.Width),
 			C.int(config.Height),
@@ -158,7 +158,7 @@ func newVPXEncoder(config VideoEncoderConfig, codec VideoCodec) (*VPXEncoder, er
 		return nil, fmt.Errorf("failed to create %s encoder: %s", codec, getVPXError())
 	}
 
-	maxOutput := C.stream_vpx_encoder_max_output_size(handle)
+	maxOutput := C.media_vpx_encoder_max_output_size(handle)
 	if maxOutput <= 0 {
 		maxOutput = C.int(config.Width * config.Height * 3 / 2)
 	}
@@ -234,7 +234,7 @@ func (e *VPXEncoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	outPtr := (*C.uint8_t)(unsafe.Pointer(&e.outputBuf[0]))
 
 	if e.svcEnabled {
-		result = C.stream_vpx_encoder_encode_svc(
+		result = C.media_vpx_encoder_encode_svc(
 			e.handle,
 			yPtr, uPtr, vPtr,
 			C.int(frame.Stride[0]),
@@ -248,7 +248,7 @@ func (e *VPXEncoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 			&spatialLayer,
 		)
 	} else {
-		result = C.stream_vpx_encoder_encode(
+		result = C.media_vpx_encoder_encode(
 			e.handle,
 			yPtr, uPtr, vPtr,
 			C.int(frame.Stride[0]),
@@ -306,7 +306,7 @@ func (e *VPXEncoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 func (e *VPXEncoder) RequestKeyframe() {
 	e.keyframeReq.Store(true)
 	if e.handle != 0 {
-		C.stream_vpx_encoder_request_keyframe(e.handle)
+		C.media_vpx_encoder_request_keyframe(e.handle)
 	}
 }
 
@@ -320,7 +320,7 @@ func (e *VPXEncoder) SetBitrate(bitrateBps int) error {
 	}
 
 	bitrateKbps := C.int(bitrateBps / 1000)
-	if C.stream_vpx_encoder_set_bitrate(e.handle, bitrateKbps) != streamVPXOK {
+	if C.media_vpx_encoder_set_bitrate(e.handle, bitrateKbps) != streamVPXOK {
 		return fmt.Errorf("failed to set bitrate: %s", getVPXError())
 	}
 
@@ -341,12 +341,12 @@ func (e *VPXEncoder) SetSVCLayers(temporalLayers, spatialLayers int) error {
 		return fmt.Errorf("spatial layers not supported for VP8")
 	}
 
-	if C.stream_vpx_encoder_set_temporal_layers(e.handle, C.int(temporalLayers)) != streamVPXOK {
+	if C.media_vpx_encoder_set_temporal_layers(e.handle, C.int(temporalLayers)) != streamVPXOK {
 		return fmt.Errorf("failed to set temporal layers: %s", getVPXError())
 	}
 
 	if e.codec == VideoCodecVP9 {
-		if C.stream_vpx_encoder_set_spatial_layers(e.handle, C.int(spatialLayers)) != streamVPXOK {
+		if C.media_vpx_encoder_set_spatial_layers(e.handle, C.int(spatialLayers)) != streamVPXOK {
 			return fmt.Errorf("failed to set spatial layers: %s", getVPXError())
 		}
 	}
@@ -379,7 +379,7 @@ func (e *VPXEncoder) GetSVCConfig() (temporalLayers, spatialLayers int, svcEnabl
 	}
 
 	var tempLayers, spatLayers, enabled C.int
-	C.stream_vpx_encoder_get_svc_config(e.handle, &tempLayers, &spatLayers, &enabled)
+	C.media_vpx_encoder_get_svc_config(e.handle, &tempLayers, &spatLayers, &enabled)
 
 	return int(tempLayers), int(spatLayers), enabled != 0
 }
@@ -412,19 +412,19 @@ func (e *VPXEncoder) Close() error {
 	defer e.mu.Unlock()
 
 	if e.handle != 0 {
-		C.stream_vpx_encoder_destroy(e.handle)
+		C.media_vpx_encoder_destroy(e.handle)
 		e.handle = 0
 	}
 
 	return nil
 }
 
-// VPXDecoder implements VideoDecoder using libstream_vpx via CGO.
+// VPXDecoder implements VideoDecoder using libmedia_vpx via CGO.
 type VPXDecoder struct {
 	config VideoDecoderConfig
 	codec  VideoCodec
 
-	handle    C.stream_vpx_decoder_t
+	handle    C.media_vpx_decoder_t
 	outputBuf *VideoFrameBuffer
 	width     int
 	height    int
@@ -448,9 +448,9 @@ func newVPXDecoder(config VideoDecoderConfig, codec VideoCodec) (*VPXDecoder, er
 	var codecType C.int
 	switch codec {
 	case VideoCodecVP8:
-		codecType = C.STREAM_VPX_CODEC_VP8
+		codecType = C.MEDIA_VPX_CODEC_VP8
 	case VideoCodecVP9:
-		codecType = C.STREAM_VPX_CODEC_VP9
+		codecType = C.MEDIA_VPX_CODEC_VP9
 	default:
 		return nil, fmt.Errorf("unsupported codec: %s", codec)
 	}
@@ -460,7 +460,7 @@ func newVPXDecoder(config VideoDecoderConfig, codec VideoCodec) (*VPXDecoder, er
 		threads = C.int(config.Threads)
 	}
 
-	handle := C.stream_vpx_decoder_create(codecType, threads)
+	handle := C.media_vpx_decoder_create(codecType, threads)
 	if handle == 0 {
 		return nil, fmt.Errorf("failed to create %s decoder: %s", codec, getVPXError())
 	}
@@ -486,7 +486,7 @@ func (d *VPXDecoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 
 	dataPtr := (*C.uint8_t)(unsafe.Pointer(&encoded.Data[0]))
 
-	result := C.stream_vpx_decoder_decode(
+	result := C.media_vpx_decoder_decode(
 		d.handle,
 		dataPtr,
 		C.int(len(encoded.Data)),
@@ -597,7 +597,7 @@ func (d *VPXDecoder) Reset() error {
 		return fmt.Errorf("decoder not initialized")
 	}
 
-	if C.stream_vpx_decoder_reset(d.handle) != streamVPXOK {
+	if C.media_vpx_decoder_reset(d.handle) != streamVPXOK {
 		return fmt.Errorf("failed to reset decoder: %s", getVPXError())
 	}
 
@@ -611,7 +611,7 @@ func (d *VPXDecoder) GetDimensions() (width, height int) {
 
 	if d.handle != 0 {
 		var w, h C.int
-		C.stream_vpx_decoder_get_dimensions(d.handle, &w, &h)
+		C.media_vpx_decoder_get_dimensions(d.handle, &w, &h)
 		return int(w), int(h)
 	}
 	return d.width, d.height
@@ -623,7 +623,7 @@ func (d *VPXDecoder) Close() error {
 	defer d.mu.Unlock()
 
 	if d.handle != 0 {
-		C.stream_vpx_decoder_destroy(d.handle)
+		C.media_vpx_decoder_destroy(d.handle)
 		d.handle = 0
 	}
 

@@ -1,4 +1,4 @@
-# Stream Media C Wrappers - Reproducible Build
+# Media Media C Wrappers - Reproducible Build
 #
 # This builds thin wrapper libraries for libvpx, libopus, x264, and libaom
 # with simple primitive-only APIs, suitable for both purego and CGO bindings.
@@ -51,10 +51,10 @@ CFLAGS_COMMON := -shared -fPIC -O2
 USE_SYSTEM_LIBS ?= 0
 
 ifeq ($(UNAME_S),Linux)
-    VPX_LIB := libstream_vpx.so
-    OPUS_LIB := libstream_opus.so
-    H264_LIB := libstream_h264.so
-    AV1_LIB := libstream_av1.so
+    VPX_LIB := libmedia_vpx.so
+    OPUS_LIB := libmedia_opus.so
+    H264_LIB := libmedia_h264.so
+    AV1_LIB := libmedia_av1.so
     DYLIB_EXT := so
 
     ifeq ($(USE_SYSTEM_LIBS),1)
@@ -86,10 +86,10 @@ ifeq ($(UNAME_S),Linux)
 endif
 
 ifeq ($(UNAME_S),Darwin)
-    VPX_LIB := libstream_vpx.dylib
-    OPUS_LIB := libstream_opus.dylib
-    H264_LIB := libstream_h264.dylib
-    AV1_LIB := libstream_av1.dylib
+    VPX_LIB := libmedia_vpx.dylib
+    OPUS_LIB := libmedia_opus.dylib
+    H264_LIB := libmedia_h264.dylib
+    AV1_LIB := libmedia_av1.dylib
     DYLIB_EXT := dylib
 
     ifeq ($(USE_SYSTEM_LIBS),1)
@@ -111,17 +111,17 @@ ifeq ($(UNAME_S),Darwin)
 
         VPX_CFLAGS := $(CFLAGS_COMMON) -I$(VPX_INCLUDE)
         VPX_LDFLAGS := -L$(VPX_LIB_PATH) -Wl,-rpath,$(VPX_LIB_PATH) -lvpx \
-                       -Wl,-install_name,@rpath/libstream_vpx.dylib
+                       -Wl,-install_name,@rpath/libmedia_vpx.dylib
         OPUS_CFLAGS := $(CFLAGS_COMMON) -I$(OPUS_INCLUDE)
         OPUS_LDFLAGS := -L$(OPUS_LIB_PATH) -Wl,-rpath,$(OPUS_LIB_PATH) -lopus \
-                        -Wl,-install_name,@rpath/libstream_opus.dylib
+                        -Wl,-install_name,@rpath/libmedia_opus.dylib
         # H264: x264 for encoder, OpenH264 for decoder (loaded dynamically via dlopen)
         H264_CFLAGS := $(CFLAGS_COMMON) -I$(X264_INCLUDE)
         H264_LDFLAGS := -L$(X264_LIB_PATH) -Wl,-rpath,$(X264_LIB_PATH) -lx264 \
-                        -Wl,-install_name,@rpath/libstream_h264.dylib
+                        -Wl,-install_name,@rpath/libmedia_h264.dylib
         AV1_CFLAGS := $(CFLAGS_COMMON) -I$(AOM_INCLUDE)
         AV1_LDFLAGS := -L$(AOM_LIB_PATH) -Wl,-rpath,$(AOM_LIB_PATH) -laom \
-                       -Wl,-install_name,@rpath/libstream_av1.dylib
+                       -Wl,-install_name,@rpath/libmedia_av1.dylib
     else
         # Use locally built static libraries (fully self-contained)
         LOCAL_VPX_LIB := $(LIBVPX_DIR)/libvpx.a
@@ -131,17 +131,17 @@ ifeq ($(UNAME_S),Darwin)
 
         VPX_CFLAGS := $(CFLAGS_COMMON) -I$(LIBVPX_DIR)
         VPX_LDFLAGS := $(LOCAL_VPX_LIB) -lm -lpthread \
-                       -Wl,-install_name,@rpath/libstream_vpx.dylib
+                       -Wl,-install_name,@rpath/libmedia_vpx.dylib
         OPUS_CFLAGS := $(CFLAGS_COMMON) -I$(LIBOPUS_DIR)/include
         OPUS_LDFLAGS := $(LOCAL_OPUS_LIB) -lm \
-                        -Wl,-install_name,@rpath/libstream_opus.dylib
+                        -Wl,-install_name,@rpath/libmedia_opus.dylib
         # H264: x264 static lib for encoder, OpenH264 for decoder (loaded dynamically via dlopen)
         H264_CFLAGS := $(CFLAGS_COMMON) -I$(X264_DIR)
         H264_LDFLAGS := $(LOCAL_X264_LIB) -lm -lpthread \
-                        -Wl,-install_name,@rpath/libstream_h264.dylib
+                        -Wl,-install_name,@rpath/libmedia_h264.dylib
         AV1_CFLAGS := $(CFLAGS_COMMON) -I$(LIBAOM_DIR)
         AV1_LDFLAGS := $(LOCAL_AOM_LIB) -lm -lpthread \
-                       -Wl,-install_name,@rpath/libstream_av1.dylib
+                       -Wl,-install_name,@rpath/libmedia_av1.dylib
     endif
 endif
 
@@ -184,16 +184,16 @@ endif
 
 # AVFoundation wrapper (macOS only)
 ifeq ($(UNAME_S),Darwin)
-AVFOUNDATION_LIB := libstream_avfoundation.dylib
+AVFOUNDATION_LIB := libmedia_avfoundation.dylib
 avfoundation: $(OUTPUT_DIR)/$(AVFOUNDATION_LIB)
 
-$(OUTPUT_DIR)/$(AVFOUNDATION_LIB): stream_avfoundation.m stream_avfoundation.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(AVFOUNDATION_LIB): media_avfoundation.m media_avfoundation.h | $(OUTPUT_DIR)
 	@echo "Building $(AVFOUNDATION_LIB)..."
 	clang -shared -fPIC -O2 -fobjc-arc \
 		-framework AVFoundation -framework CoreMedia -framework CoreVideo -framework Foundation \
-		-Wl,-install_name,@rpath/libstream_avfoundation.dylib \
-		-o $@ stream_avfoundation.m
-	cp stream_avfoundation.h $(OUTPUT_DIR)/
+		-Wl,-install_name,@rpath/libmedia_avfoundation.dylib \
+		-o $@ media_avfoundation.m
+	cp media_avfoundation.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 else
 avfoundation:
@@ -202,36 +202,36 @@ endif
 
 # Compositor library (cross-platform)
 ifeq ($(UNAME_S),Darwin)
-COMPOSITOR_LIB := libstream_compositor.dylib
+COMPOSITOR_LIB := libmedia_compositor.dylib
 compositor: $(OUTPUT_DIR)/$(COMPOSITOR_LIB)
 
-$(OUTPUT_DIR)/$(COMPOSITOR_LIB): stream_compositor.c stream_compositor.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(COMPOSITOR_LIB): media_compositor.c media_compositor.h | $(OUTPUT_DIR)
 	@echo "Building $(COMPOSITOR_LIB)..."
 	$(CC) -shared -fPIC -O3 \
-		-Wl,-install_name,@rpath/libstream_compositor.dylib \
-		-o $@ stream_compositor.c
-	cp stream_compositor.h $(OUTPUT_DIR)/
+		-Wl,-install_name,@rpath/libmedia_compositor.dylib \
+		-o $@ media_compositor.c
+	cp media_compositor.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 else ifeq ($(UNAME_S),Linux)
-COMPOSITOR_LIB := libstream_compositor.so
+COMPOSITOR_LIB := libmedia_compositor.so
 compositor: $(OUTPUT_DIR)/$(COMPOSITOR_LIB)
 
-$(OUTPUT_DIR)/$(COMPOSITOR_LIB): stream_compositor.c stream_compositor.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(COMPOSITOR_LIB): media_compositor.c media_compositor.h | $(OUTPUT_DIR)
 	@echo "Building $(COMPOSITOR_LIB)..."
-	$(CC) -shared -fPIC -O3 -o $@ stream_compositor.c -lm
-	cp stream_compositor.h $(OUTPUT_DIR)/
+	$(CC) -shared -fPIC -O3 -o $@ media_compositor.c -lm
+	cp media_compositor.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 endif
 
 # V4L2 wrapper (Linux only)
 ifeq ($(UNAME_S),Linux)
-V4L2_LIB := libstream_v4l2.so
+V4L2_LIB := libmedia_v4l2.so
 v4l2: $(OUTPUT_DIR)/$(V4L2_LIB)
 
-$(OUTPUT_DIR)/$(V4L2_LIB): stream_v4l2.c stream_v4l2.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(V4L2_LIB): media_v4l2.c media_v4l2.h | $(OUTPUT_DIR)
 	@echo "Building $(V4L2_LIB)..."
-	$(CC) $(CFLAGS_COMMON) -o $@ stream_v4l2.c -lpthread
-	cp stream_v4l2.h $(OUTPUT_DIR)/
+	$(CC) $(CFLAGS_COMMON) -o $@ media_v4l2.c -lpthread
+	cp media_v4l2.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 else
 v4l2:
@@ -240,13 +240,13 @@ endif
 
 # ALSA wrapper (Linux only)
 ifeq ($(UNAME_S),Linux)
-ALSA_LIB := libstream_alsa.so
+ALSA_LIB := libmedia_alsa.so
 alsa: $(OUTPUT_DIR)/$(ALSA_LIB)
 
-$(OUTPUT_DIR)/$(ALSA_LIB): stream_alsa.c stream_alsa.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(ALSA_LIB): media_alsa.c media_alsa.h | $(OUTPUT_DIR)
 	@echo "Building $(ALSA_LIB)..."
-	$(CC) $(CFLAGS_COMMON) -o $@ stream_alsa.c -lasound -lpthread
-	cp stream_alsa.h $(OUTPUT_DIR)/
+	$(CC) $(CFLAGS_COMMON) -o $@ media_alsa.c -lasound -lpthread
+	cp media_alsa.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 else
 alsa:
@@ -261,12 +261,12 @@ $(OUTPUT_DIR):
 # Build VPX Wrapper
 # ==============================================================================
 
-$(OUTPUT_DIR)/$(VPX_LIB): stream_vpx.c stream_vpx.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(VPX_LIB): media_vpx.c media_vpx.h | $(OUTPUT_DIR)
 	@echo "Building $(VPX_LIB)..."
 ifeq ($(USE_SYSTEM_LIBS),0)
 	@test -f $(LOCAL_VPX_LIB) || (echo "Error: libvpx not built. Run 'make deps-vpx' first." && exit 1)
 endif
-	$(CC) $(VPX_CFLAGS) -o $@ stream_vpx.c $(VPX_LDFLAGS)
+	$(CC) $(VPX_CFLAGS) -o $@ media_vpx.c $(VPX_LDFLAGS)
 ifeq ($(UNAME_S),Darwin)
 ifeq ($(USE_SYSTEM_LIBS),1)
 	@# Fix Homebrew placeholder paths
@@ -274,19 +274,19 @@ ifeq ($(USE_SYSTEM_LIBS),1)
 		"$(VPX_LIB_PATH)/libvpx.11.dylib" $@ 2>/dev/null || true
 endif
 endif
-	cp stream_vpx.h $(OUTPUT_DIR)/
+	cp media_vpx.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 
 # ==============================================================================
 # Build Opus Wrapper
 # ==============================================================================
 
-$(OUTPUT_DIR)/$(OPUS_LIB): stream_opus.c stream_opus.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(OPUS_LIB): media_opus.c media_opus.h | $(OUTPUT_DIR)
 	@echo "Building $(OPUS_LIB)..."
 ifeq ($(USE_SYSTEM_LIBS),0)
 	@test -f $(LOCAL_OPUS_LIB) || (echo "Error: libopus not built. Run 'make deps-opus' first." && exit 1)
 endif
-	$(CC) $(OPUS_CFLAGS) -o $@ stream_opus.c $(OPUS_LDFLAGS)
+	$(CC) $(OPUS_CFLAGS) -o $@ media_opus.c $(OPUS_LDFLAGS)
 ifeq ($(UNAME_S),Darwin)
 ifeq ($(USE_SYSTEM_LIBS),1)
 	@# Fix Homebrew placeholder paths
@@ -294,19 +294,19 @@ ifeq ($(USE_SYSTEM_LIBS),1)
 		"$(OPUS_LIB_PATH)/libopus.0.dylib" $@ 2>/dev/null || true
 endif
 endif
-	cp stream_opus.h $(OUTPUT_DIR)/
+	cp media_opus.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 
 # ==============================================================================
 # Build H.264 Wrapper (x264)
 # ==============================================================================
 
-$(OUTPUT_DIR)/$(H264_LIB): stream_h264.c stream_h264.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(H264_LIB): media_h264.c media_h264.h | $(OUTPUT_DIR)
 	@echo "Building $(H264_LIB)..."
 ifeq ($(USE_SYSTEM_LIBS),0)
 	@test -f $(LOCAL_X264_LIB) || (echo "Error: x264 not built. Run 'make deps-x264' first." && exit 1)
 endif
-	$(CC) $(H264_CFLAGS) -o $@ stream_h264.c $(H264_LDFLAGS)
+	$(CC) $(H264_CFLAGS) -o $@ media_h264.c $(H264_LDFLAGS)
 ifeq ($(UNAME_S),Darwin)
 ifeq ($(USE_SYSTEM_LIBS),1)
 	@# Fix Homebrew placeholder paths (try multiple versions)
@@ -316,19 +316,19 @@ ifeq ($(USE_SYSTEM_LIBS),1)
 		"$(X264_LIB_PATH)/libx264.164.dylib" $@ 2>/dev/null || true
 endif
 endif
-	cp stream_h264.h $(OUTPUT_DIR)/
+	cp media_h264.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 
 # ==============================================================================
 # Build AV1 Wrapper (libaom)
 # ==============================================================================
 
-$(OUTPUT_DIR)/$(AV1_LIB): stream_av1.c stream_av1.h | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(AV1_LIB): media_av1.c media_av1.h | $(OUTPUT_DIR)
 	@echo "Building $(AV1_LIB)..."
 ifeq ($(USE_SYSTEM_LIBS),0)
 	@test -f $(LOCAL_AOM_LIB) || (echo "Error: libaom not built. Run 'make deps-aom' first." && exit 1)
 endif
-	$(CC) $(AV1_CFLAGS) -o $@ stream_av1.c $(AV1_LDFLAGS)
+	$(CC) $(AV1_CFLAGS) -o $@ media_av1.c $(AV1_LDFLAGS)
 ifeq ($(UNAME_S),Darwin)
 ifeq ($(USE_SYSTEM_LIBS),1)
 	@# Fix Homebrew placeholder paths
@@ -336,7 +336,7 @@ ifeq ($(USE_SYSTEM_LIBS),1)
 		"$(AOM_LIB_PATH)/libaom.3.dylib" $@ 2>/dev/null || true
 endif
 endif
-	cp stream_av1.h $(OUTPUT_DIR)/
+	cp media_av1.h $(OUTPUT_DIR)/
 	@echo "Built: $@"
 
 # ==============================================================================
@@ -478,27 +478,27 @@ install: all
 ifeq ($(UNAME_S),Linux)
 	sudo cp $(OUTPUT_DIR)/$(VPX_LIB) $(OUTPUT_DIR)/$(OPUS_LIB) \
 	       $(OUTPUT_DIR)/$(H264_LIB) $(OUTPUT_DIR)/$(AV1_LIB) /usr/local/lib/
-	sudo cp stream_vpx.h stream_opus.h stream_h264.h stream_av1.h /usr/local/include/
+	sudo cp media_vpx.h media_opus.h media_h264.h media_av1.h /usr/local/include/
 	sudo ldconfig
 endif
 ifeq ($(UNAME_S),Darwin)
 	cp $(OUTPUT_DIR)/$(VPX_LIB) $(OUTPUT_DIR)/$(OPUS_LIB) \
 	   $(OUTPUT_DIR)/$(H264_LIB) $(OUTPUT_DIR)/$(AV1_LIB) /usr/local/lib/
-	cp stream_vpx.h stream_opus.h stream_h264.h stream_av1.h /usr/local/include/
+	cp media_vpx.h media_opus.h media_h264.h media_av1.h /usr/local/include/
 endif
 
 # Clean wrapper libraries only
 clean:
 	rm -f $(OUTPUT_DIR)/$(VPX_LIB) $(OUTPUT_DIR)/$(OPUS_LIB)
 	rm -f $(OUTPUT_DIR)/$(H264_LIB) $(OUTPUT_DIR)/$(AV1_LIB)
-	rm -f $(OUTPUT_DIR)/stream_vpx.h $(OUTPUT_DIR)/stream_opus.h
-	rm -f $(OUTPUT_DIR)/stream_h264.h $(OUTPUT_DIR)/stream_av1.h
+	rm -f $(OUTPUT_DIR)/media_vpx.h $(OUTPUT_DIR)/media_opus.h
+	rm -f $(OUTPUT_DIR)/media_h264.h $(OUTPUT_DIR)/media_av1.h
 ifeq ($(UNAME_S),Darwin)
-	rm -f $(OUTPUT_DIR)/libstream_avfoundation.dylib $(OUTPUT_DIR)/stream_avfoundation.h
+	rm -f $(OUTPUT_DIR)/libmedia_avfoundation.dylib $(OUTPUT_DIR)/media_avfoundation.h
 endif
 ifeq ($(UNAME_S),Linux)
-	rm -f $(OUTPUT_DIR)/libstream_v4l2.so $(OUTPUT_DIR)/stream_v4l2.h
-	rm -f $(OUTPUT_DIR)/libstream_alsa.so $(OUTPUT_DIR)/stream_alsa.h
+	rm -f $(OUTPUT_DIR)/libmedia_v4l2.so $(OUTPUT_DIR)/media_v4l2.h
+	rm -f $(OUTPUT_DIR)/libmedia_alsa.so $(OUTPUT_DIR)/media_alsa.h
 endif
 
 # Clean downloaded dependencies
@@ -510,7 +510,7 @@ distclean: clean clean-deps
 
 # Show build info
 info:
-	@echo "Stream Media C Wrappers Build Info"
+	@echo "Media Media C Wrappers Build Info"
 	@echo "=================================="
 	@echo "OS:              $(UNAME_S)"
 	@echo "Architecture:    $(UNAME_M)"
@@ -574,17 +574,17 @@ endif
 
 # Help
 help:
-	@echo "Stream Media C Wrappers - Reproducible Build System"
+	@echo "Media Media C Wrappers - Reproducible Build System"
 	@echo ""
 	@echo "This Makefile can build libvpx, libopus, x264, and libaom from source"
 	@echo "for fully reproducible builds, or use system-installed libraries."
 	@echo ""
 	@echo "Main Targets:"
 	@echo "  all          - Build all wrapper libraries (default)"
-	@echo "  vpx          - Build libstream_vpx only (VP8/VP9)"
-	@echo "  opus         - Build libstream_opus only (audio)"
-	@echo "  h264         - Build libstream_h264 only (H.264)"
-	@echo "  av1          - Build libstream_av1 only (AV1)"
+	@echo "  vpx          - Build libmedia_vpx only (VP8/VP9)"
+	@echo "  opus         - Build libmedia_opus only (audio)"
+	@echo "  h264         - Build libmedia_h264 only (H.264)"
+	@echo "  av1          - Build libmedia_av1 only (AV1)"
 	@echo "  deps         - Download and build all dependencies from source"
 	@echo "  deps-vpx     - Download and build libvpx from source"
 	@echo "  deps-opus    - Download and build libopus from source"

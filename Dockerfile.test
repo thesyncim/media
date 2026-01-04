@@ -42,6 +42,6 @@ RUN mkdir -p /usr/local/include/opus /usr/local/lib/pkgconfig && \
 
 # Run all tests
 WORKDIR /app
-ENV STREAM_SDK_LIB_PATH=/app/build
+ENV MEDIA_SDK_LIB_PATH=/app/build
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 CMD ["go", "test", "-v", "./..."]

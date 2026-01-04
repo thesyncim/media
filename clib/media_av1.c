@@ -1,7 +1,7 @@
-// stream_av1.c - libaom wrapper implementation
+// media_av1.c - libaom wrapper implementation
 // Thin wrapper around libaom for AV1 encoding/decoding
 
-#include "stream_av1.h"
+#include "media_av1.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -37,7 +37,7 @@ static void set_error(const char* fmt, ...) {
     va_end(args);
 }
 
-const char* stream_av1_get_error(void) {
+const char* media_av1_get_error(void) {
     return g_error_msg[0] ? g_error_msg : NULL;
 }
 
@@ -71,11 +71,11 @@ typedef struct {
     int output_size;
 } encoder_state_t;
 
-int stream_av1_encoder_available(void) {
+int media_av1_encoder_available(void) {
     return 1;
 }
 
-stream_av1_encoder_t stream_av1_encoder_create(
+media_av1_encoder_t media_av1_encoder_create(
     int width,
     int height,
     int fps,
@@ -83,10 +83,10 @@ stream_av1_encoder_t stream_av1_encoder_create(
     int usage,
     int threads
 ) {
-    return stream_av1_encoder_create_svc(width, height, fps, bitrate_kbps, usage, threads, 1, 1);
+    return media_av1_encoder_create_svc(width, height, fps, bitrate_kbps, usage, threads, 1, 1);
 }
 
-stream_av1_encoder_t stream_av1_encoder_create_svc(
+media_av1_encoder_t media_av1_encoder_create_svc(
     int width,
     int height,
     int fps,
@@ -112,7 +112,7 @@ stream_av1_encoder_t stream_av1_encoder_create_svc(
     // Get default config
     aom_codec_iface_t* iface = aom_codec_av1_cx();
     aom_codec_err_t res = aom_codec_enc_config_default(iface, &state->cfg,
-        usage == STREAM_AV1_USAGE_REALTIME ? AOM_USAGE_REALTIME : AOM_USAGE_GOOD_QUALITY);
+        usage == MEDIA_AV1_USAGE_REALTIME ? AOM_USAGE_REALTIME : AOM_USAGE_GOOD_QUALITY);
     if (res != AOM_CODEC_OK) {
         set_error("Failed to get default config: %s", aom_codec_err_to_string(res));
         free(state);
@@ -149,7 +149,7 @@ stream_av1_encoder_t stream_av1_encoder_create_svc(
     }
 
     // Set realtime options
-    if (usage == STREAM_AV1_USAGE_REALTIME) {
+    if (usage == MEDIA_AV1_USAGE_REALTIME) {
         aom_codec_control(&state->codec, AOME_SET_CPUUSED, 8);  // Fastest
         aom_codec_control(&state->codec, AV1E_SET_TILE_COLUMNS, 2);
         aom_codec_control(&state->codec, AV1E_SET_TILE_ROWS, 1);
@@ -177,11 +177,11 @@ stream_av1_encoder_t stream_av1_encoder_create_svc(
     // First frame must be a keyframe
     state->force_keyframe = 1;
 
-    return (stream_av1_encoder_t)(uintptr_t)state;
+    return (media_av1_encoder_t)(uintptr_t)state;
 }
 
-int stream_av1_encoder_encode(
-    stream_av1_encoder_t encoder,
+int media_av1_encoder_encode(
+    media_av1_encoder_t encoder,
     const uint8_t* y_plane,
     const uint8_t* u_plane,
     const uint8_t* v_plane,
@@ -194,13 +194,13 @@ int stream_av1_encoder_encode(
     int64_t* out_pts
 ) {
     int temporal_layer, spatial_layer;
-    return stream_av1_encoder_encode_svc(encoder, y_plane, u_plane, v_plane,
+    return media_av1_encoder_encode_svc(encoder, y_plane, u_plane, v_plane,
         y_stride, uv_stride, force_keyframe, out_data, out_capacity,
         out_frame_type, out_pts, &temporal_layer, &spatial_layer);
 }
 
-int stream_av1_encoder_encode_svc(
-    stream_av1_encoder_t encoder,
+int media_av1_encoder_encode_svc(
+    media_av1_encoder_t encoder,
     const uint8_t* y_plane,
     const uint8_t* u_plane,
     const uint8_t* v_plane,
@@ -217,7 +217,7 @@ int stream_av1_encoder_encode_svc(
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (!state) {
         set_error("Invalid encoder handle");
-        return STREAM_AV1_ERROR_INVALID;
+        return MEDIA_AV1_ERROR_INVALID;
     }
 
     // Copy input to image
@@ -242,7 +242,7 @@ int stream_av1_encoder_encode_svc(
                                            state->pts++, 1, flags);
     if (res != AOM_CODEC_OK) {
         set_error("Encode failed: %s", aom_codec_err_to_string(res));
-        return STREAM_AV1_ERROR_CODEC;
+        return MEDIA_AV1_ERROR_CODEC;
     }
 
     // Get encoded data
@@ -254,7 +254,7 @@ int stream_av1_encoder_encode_svc(
         if (pkt->kind == AOM_CODEC_CX_FRAME_PKT) {
             if (total_size + (int)pkt->data.frame.sz > out_capacity) {
                 set_error("Output buffer too small");
-                return STREAM_AV1_ERROR_NOMEM;
+                return MEDIA_AV1_ERROR_NOMEM;
             }
 
             memcpy(out_data + total_size, pkt->data.frame.buf, pkt->data.frame.sz);
@@ -262,10 +262,10 @@ int stream_av1_encoder_encode_svc(
 
             if (out_frame_type) {
                 if (pkt->data.frame.flags & AOM_FRAME_IS_KEY) {
-                    *out_frame_type = STREAM_AV1_FRAME_KEY;
+                    *out_frame_type = MEDIA_AV1_FRAME_KEY;
                     state->keyframes_encoded++;
                 } else {
-                    *out_frame_type = STREAM_AV1_FRAME_INTER;
+                    *out_frame_type = MEDIA_AV1_FRAME_INTER;
                 }
             }
 
@@ -284,50 +284,50 @@ int stream_av1_encoder_encode_svc(
     return total_size;
 }
 
-int stream_av1_encoder_max_output_size(stream_av1_encoder_t encoder) {
+int media_av1_encoder_max_output_size(media_av1_encoder_t encoder) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (!state) return 0;
     return state->width * state->height * 3 / 2;
 }
 
-void stream_av1_encoder_request_keyframe(stream_av1_encoder_t encoder) {
+void media_av1_encoder_request_keyframe(media_av1_encoder_t encoder) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (state) {
         state->force_keyframe = 1;
     }
 }
 
-int stream_av1_encoder_set_bitrate(stream_av1_encoder_t encoder, int bitrate_kbps) {
+int media_av1_encoder_set_bitrate(media_av1_encoder_t encoder, int bitrate_kbps) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
-    if (!state) return STREAM_AV1_ERROR_INVALID;
+    if (!state) return MEDIA_AV1_ERROR_INVALID;
 
     state->cfg.rc_target_bitrate = bitrate_kbps;
     if (aom_codec_enc_config_set(&state->codec, &state->cfg) != AOM_CODEC_OK) {
         set_error("failed to set bitrate: %s", aom_codec_error_detail(&state->codec));
-        return STREAM_AV1_ERROR_CODEC;
+        return MEDIA_AV1_ERROR_CODEC;
     }
 
-    return STREAM_AV1_OK;
+    return MEDIA_AV1_OK;
 }
 
-int stream_av1_encoder_set_temporal_layers(stream_av1_encoder_t encoder, int layers) {
+int media_av1_encoder_set_temporal_layers(media_av1_encoder_t encoder, int layers) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
-    if (!state) return STREAM_AV1_ERROR_INVALID;
+    if (!state) return MEDIA_AV1_ERROR_INVALID;
     state->temporal_layers = layers;
     state->svc_enabled = (layers > 1 || state->spatial_layers > 1);
-    return STREAM_AV1_OK;
+    return MEDIA_AV1_OK;
 }
 
-int stream_av1_encoder_set_spatial_layers(stream_av1_encoder_t encoder, int layers) {
+int media_av1_encoder_set_spatial_layers(media_av1_encoder_t encoder, int layers) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
-    if (!state) return STREAM_AV1_ERROR_INVALID;
+    if (!state) return MEDIA_AV1_ERROR_INVALID;
     state->spatial_layers = layers;
     state->svc_enabled = (state->temporal_layers > 1 || layers > 1);
-    return STREAM_AV1_OK;
+    return MEDIA_AV1_OK;
 }
 
-void stream_av1_encoder_get_svc_config(
-    stream_av1_encoder_t encoder,
+void media_av1_encoder_get_svc_config(
+    media_av1_encoder_t encoder,
     int* temporal_layers,
     int* spatial_layers,
     int* svc_enabled
@@ -339,8 +339,8 @@ void stream_av1_encoder_get_svc_config(
     if (svc_enabled) *svc_enabled = state->svc_enabled;
 }
 
-void stream_av1_encoder_get_stats(
-    stream_av1_encoder_t encoder,
+void media_av1_encoder_get_stats(
+    media_av1_encoder_t encoder,
     uint64_t* frames_encoded,
     uint64_t* keyframes_encoded,
     uint64_t* bytes_encoded
@@ -352,7 +352,7 @@ void stream_av1_encoder_get_stats(
     if (bytes_encoded) *bytes_encoded = state->bytes_encoded;
 }
 
-void stream_av1_encoder_destroy(stream_av1_encoder_t encoder) {
+void media_av1_encoder_destroy(media_av1_encoder_t encoder) {
     encoder_state_t* state = (encoder_state_t*)(uintptr_t)encoder;
     if (!state) return;
 
@@ -364,27 +364,27 @@ void stream_av1_encoder_destroy(stream_av1_encoder_t encoder) {
 
 #else // !HAS_AOM_ENCODER
 
-int stream_av1_encoder_available(void) { return 0; }
-stream_av1_encoder_t stream_av1_encoder_create(int w, int h, int fps, int br, int usage, int thr) {
+int media_av1_encoder_available(void) { return 0; }
+media_av1_encoder_t media_av1_encoder_create(int w, int h, int fps, int br, int usage, int thr) {
     set_error("libaom encoder not available");
     return 0;
 }
-stream_av1_encoder_t stream_av1_encoder_create_svc(int w, int h, int fps, int br, int usage, int thr, int tl, int sl) {
+media_av1_encoder_t media_av1_encoder_create_svc(int w, int h, int fps, int br, int usage, int thr, int tl, int sl) {
     set_error("libaom encoder not available");
     return 0;
 }
-int stream_av1_encoder_encode(stream_av1_encoder_t e, const uint8_t* y, const uint8_t* u, const uint8_t* v,
-    int ys, int uvs, int fk, uint8_t* out, int oc, int* ft, int64_t* pts) { return STREAM_AV1_ERROR; }
-int stream_av1_encoder_encode_svc(stream_av1_encoder_t e, const uint8_t* y, const uint8_t* u, const uint8_t* v,
-    int ys, int uvs, int fk, uint8_t* out, int oc, int* ft, int64_t* pts, int* tl, int* sl) { return STREAM_AV1_ERROR; }
-int stream_av1_encoder_max_output_size(stream_av1_encoder_t e) { return 0; }
-void stream_av1_encoder_request_keyframe(stream_av1_encoder_t e) {}
-int stream_av1_encoder_set_bitrate(stream_av1_encoder_t e, int br) { return STREAM_AV1_ERROR; }
-int stream_av1_encoder_set_temporal_layers(stream_av1_encoder_t e, int l) { return STREAM_AV1_ERROR; }
-int stream_av1_encoder_set_spatial_layers(stream_av1_encoder_t e, int l) { return STREAM_AV1_ERROR; }
-void stream_av1_encoder_get_svc_config(stream_av1_encoder_t e, int* tl, int* sl, int* en) {}
-void stream_av1_encoder_get_stats(stream_av1_encoder_t e, uint64_t* f, uint64_t* k, uint64_t* b) {}
-void stream_av1_encoder_destroy(stream_av1_encoder_t e) {}
+int media_av1_encoder_encode(media_av1_encoder_t e, const uint8_t* y, const uint8_t* u, const uint8_t* v,
+    int ys, int uvs, int fk, uint8_t* out, int oc, int* ft, int64_t* pts) { return MEDIA_AV1_ERROR; }
+int media_av1_encoder_encode_svc(media_av1_encoder_t e, const uint8_t* y, const uint8_t* u, const uint8_t* v,
+    int ys, int uvs, int fk, uint8_t* out, int oc, int* ft, int64_t* pts, int* tl, int* sl) { return MEDIA_AV1_ERROR; }
+int media_av1_encoder_max_output_size(media_av1_encoder_t e) { return 0; }
+void media_av1_encoder_request_keyframe(media_av1_encoder_t e) {}
+int media_av1_encoder_set_bitrate(media_av1_encoder_t e, int br) { return MEDIA_AV1_ERROR; }
+int media_av1_encoder_set_temporal_layers(media_av1_encoder_t e, int l) { return MEDIA_AV1_ERROR; }
+int media_av1_encoder_set_spatial_layers(media_av1_encoder_t e, int l) { return MEDIA_AV1_ERROR; }
+void media_av1_encoder_get_svc_config(media_av1_encoder_t e, int* tl, int* sl, int* en) {}
+void media_av1_encoder_get_stats(media_av1_encoder_t e, uint64_t* f, uint64_t* k, uint64_t* b) {}
+void media_av1_encoder_destroy(media_av1_encoder_t e) {}
 
 #endif // HAS_AOM_ENCODER
 
@@ -402,9 +402,9 @@ typedef struct {
     uint64_t corrupted_frames;
 } decoder_state_t;
 
-int stream_av1_decoder_available(void) { return 1; }
+int media_av1_decoder_available(void) { return 1; }
 
-stream_av1_decoder_t stream_av1_decoder_create(int threads) {
+media_av1_decoder_t media_av1_decoder_create(int threads) {
     decoder_state_t* state = calloc(1, sizeof(decoder_state_t));
     if (!state) {
         set_error("Failed to allocate decoder state");
@@ -423,11 +423,11 @@ stream_av1_decoder_t stream_av1_decoder_create(int threads) {
         return 0;
     }
 
-    return (stream_av1_decoder_t)(uintptr_t)state;
+    return (media_av1_decoder_t)(uintptr_t)state;
 }
 
-int stream_av1_decoder_decode(
-    stream_av1_decoder_t decoder,
+int media_av1_decoder_decode(
+    media_av1_decoder_t decoder,
     const uint8_t* data,
     int data_len,
     const uint8_t** out_y,
@@ -441,14 +441,14 @@ int stream_av1_decoder_decode(
     decoder_state_t* state = (decoder_state_t*)(uintptr_t)decoder;
     if (!state) {
         set_error("Invalid decoder handle");
-        return STREAM_AV1_ERROR_INVALID;
+        return MEDIA_AV1_ERROR_INVALID;
     }
 
     aom_codec_err_t res = aom_codec_decode(&state->codec, data, data_len, NULL);
     if (res != AOM_CODEC_OK) {
         state->corrupted_frames++;
         set_error("Decode failed: %s", aom_codec_err_to_string(res));
-        return STREAM_AV1_ERROR_CODEC;
+        return MEDIA_AV1_ERROR_CODEC;
     }
 
     aom_codec_iter_t iter = NULL;
@@ -474,15 +474,15 @@ int stream_av1_decoder_decode(
     return 1;
 }
 
-void stream_av1_decoder_get_dimensions(stream_av1_decoder_t decoder, int* width, int* height) {
+void media_av1_decoder_get_dimensions(media_av1_decoder_t decoder, int* width, int* height) {
     decoder_state_t* state = (decoder_state_t*)(uintptr_t)decoder;
     if (!state) return;
     if (width) *width = state->width;
     if (height) *height = state->height;
 }
 
-void stream_av1_decoder_get_stats(
-    stream_av1_decoder_t decoder,
+void media_av1_decoder_get_stats(
+    media_av1_decoder_t decoder,
     uint64_t* frames_decoded,
     uint64_t* keyframes_decoded,
     uint64_t* bytes_decoded,
@@ -496,14 +496,14 @@ void stream_av1_decoder_get_stats(
     if (corrupted_frames) *corrupted_frames = state->corrupted_frames;
 }
 
-int stream_av1_decoder_reset(stream_av1_decoder_t decoder) {
+int media_av1_decoder_reset(media_av1_decoder_t decoder) {
     decoder_state_t* state = (decoder_state_t*)(uintptr_t)decoder;
-    if (!state) return STREAM_AV1_ERROR_INVALID;
+    if (!state) return MEDIA_AV1_ERROR_INVALID;
     // libaom doesn't have explicit reset, we'd need to recreate
-    return STREAM_AV1_OK;
+    return MEDIA_AV1_OK;
 }
 
-void stream_av1_decoder_destroy(stream_av1_decoder_t decoder) {
+void media_av1_decoder_destroy(media_av1_decoder_t decoder) {
     decoder_state_t* state = (decoder_state_t*)(uintptr_t)decoder;
     if (!state) return;
     aom_codec_destroy(&state->codec);
@@ -512,16 +512,16 @@ void stream_av1_decoder_destroy(stream_av1_decoder_t decoder) {
 
 #else // !HAS_AOM_DECODER
 
-int stream_av1_decoder_available(void) { return 0; }
-stream_av1_decoder_t stream_av1_decoder_create(int threads) {
+int media_av1_decoder_available(void) { return 0; }
+media_av1_decoder_t media_av1_decoder_create(int threads) {
     set_error("libaom decoder not available");
     return 0;
 }
-int stream_av1_decoder_decode(stream_av1_decoder_t d, const uint8_t* data, int len,
-    const uint8_t** y, const uint8_t** u, const uint8_t** v, int* ys, int* uvs, int* w, int* h) { return STREAM_AV1_ERROR; }
-void stream_av1_decoder_get_dimensions(stream_av1_decoder_t d, int* w, int* h) {}
-void stream_av1_decoder_get_stats(stream_av1_decoder_t d, uint64_t* f, uint64_t* k, uint64_t* b, uint64_t* c) {}
-int stream_av1_decoder_reset(stream_av1_decoder_t d) { return STREAM_AV1_ERROR; }
-void stream_av1_decoder_destroy(stream_av1_decoder_t d) {}
+int media_av1_decoder_decode(media_av1_decoder_t d, const uint8_t* data, int len,
+    const uint8_t** y, const uint8_t** u, const uint8_t** v, int* ys, int* uvs, int* w, int* h) { return MEDIA_AV1_ERROR; }
+void media_av1_decoder_get_dimensions(media_av1_decoder_t d, int* w, int* h) {}
+void media_av1_decoder_get_stats(media_av1_decoder_t d, uint64_t* f, uint64_t* k, uint64_t* b, uint64_t* c) {}
+int media_av1_decoder_reset(media_av1_decoder_t d) { return MEDIA_AV1_ERROR; }
+void media_av1_decoder_destroy(media_av1_decoder_t d) {}
 
 #endif // HAS_AOM_DECODER

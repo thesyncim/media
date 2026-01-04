@@ -1,8 +1,8 @@
 // Package media provides WebRTC-style media primitives in Go, backed by
-// native codec/device wrappers (libstream_*).
+// native codec/device wrappers (libmedia_*).
 //
 // Key pieces include:
-//   - MediaStream/MediaStreamTrack and MediaDevices (getUserMedia-style APIs)
+//   - VideoTrack/AudioTrack and MediaDevices (getUserMedia-style APIs)
 //   - Video/Audio encoders and decoders
 //   - RTP packetizers/depacketizers and RTPReader/RTPWriter helpers
 //   - Pipelines for RTP encode/decode
@@ -16,8 +16,8 @@
 //
 // # Native Libraries
 //
-// Bindings load libstream_* libraries built from clib/ into build/.
-// Set STREAM_SDK_LIB_PATH to the directory containing these libraries.
+// Bindings load libmedia_* libraries built from clib/ into build/.
+// Set MEDIA_SDK_LIB_PATH to the directory containing these libraries.
 // By default the package uses purego (CGO_ENABLED=0). With CGO enabled it
 // links against the same wrappers for lower overhead.
 //

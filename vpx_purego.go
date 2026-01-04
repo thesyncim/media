@@ -151,6 +151,14 @@ func getStreamVPXLibPaths() []string {
 		)
 	}
 
+	// Search relative to source root (uses runtime.Caller - works in IDE/tests)
+	if sourceRoot := findSourceRoot(); sourceRoot != "" {
+		paths = append(paths,
+			filepath.Join(sourceRoot, "build", libName),
+			filepath.Join(sourceRoot, "build", "ffi", libName),
+		)
+	}
+
 	// Development paths - relative
 	devPaths := []string{
 		"build",

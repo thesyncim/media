@@ -227,10 +227,11 @@ func parseAnnexBNALUnits(data []byte) [][]byte {
 
 // H264Depacketizer reassembles H.264 NAL units from RTP packets.
 type H264Depacketizer struct {
-	fragments   []byte
-	fragmenting bool
-	timestamp   uint32
-	frameType   FrameType
+	frameData   []byte    // Accumulated NAL data for current frame (Annex-B format)
+	fuaBuffer   []byte    // Buffer for FU-A fragments (single NAL being assembled)
+	fragmenting bool      // True when in the middle of FU-A fragmentation
+	timestamp   uint32    // Current frame timestamp
+	frameType   FrameType // Current frame type (key or delta)
 	mu          sync.Mutex
 }
 
@@ -240,6 +241,7 @@ func NewH264Depacketizer() *H264Depacketizer {
 }
 
 // Depacketize processes an RTP packet and returns a complete frame if available.
+// The returned frame contains Annex-B formatted NAL units (start codes + NAL data).
 func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -252,38 +254,35 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 
 	// Handle timestamp changes (new frame started)
 	if d.timestamp != 0 && d.timestamp != pkt.Header.Timestamp {
-		d.fragments = d.fragments[:0]
+		d.frameData = d.frameData[:0]
+		d.fuaBuffer = d.fuaBuffer[:0]
 		d.fragmenting = false
+		d.frameType = FrameTypeUnknown
 	}
 	d.timestamp = pkt.Header.Timestamp
 
-	var nalData []byte
-	var err error
-
 	switch {
 	case nalType >= 1 && nalType <= 23:
-		// Single NAL unit packet
-		d.fragments = d.fragments[:0]
-		d.fragmenting = false
-		// Detect keyframe (IDR)
+		// Single NAL unit packet - accumulate into frame
+		// Detect keyframe (IDR = type 5)
 		if nalType == nalTypeIDR {
 			d.frameType = FrameTypeKey
-		} else {
+		} else if d.frameType != FrameTypeKey {
 			d.frameType = FrameTypeDelta
 		}
-		nalData = pkt.Payload
+		// Append with Annex-B start code
+		d.frameData = append(d.frameData, 0, 0, 0, 1)
+		d.frameData = append(d.frameData, pkt.Payload...)
 
 	case nalType == 24:
-		// STAP-A (Single-time aggregation packet)
-		nalData, err = d.depacketizeSTAPA(pkt.Payload)
-		if err != nil {
+		// STAP-A (Single-time aggregation packet) - multiple NALs in one packet
+		if err := d.depacketizeSTAPA(pkt.Payload); err != nil {
 			return nil, err
 		}
 
 	case nalType == 28:
-		// FU-A (Fragmentation unit)
-		nalData, err = d.depacketizeFUA(pkt.Payload)
-		if err != nil {
+		// FU-A (Fragmentation unit) - NAL split across multiple packets
+		if err := d.depacketizeFUA(pkt.Payload); err != nil {
 			return nil, err
 		}
 
@@ -291,16 +290,17 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 		return nil, fmt.Errorf("unsupported NAL type: %d", nalType)
 	}
 
-	if nalData == nil {
-		return nil, nil
-	}
-
-	if pkt.Header.Marker {
+	// Return frame when marker bit is set (end of frame)
+	if pkt.Header.Marker && len(d.frameData) > 0 {
 		frame := &EncodedFrame{
-			Data:      nalData,
+			Data:      make([]byte, len(d.frameData)),
 			FrameType: d.frameType,
 			Timestamp: d.timestamp,
 		}
+		copy(frame.Data, d.frameData)
+
+		// Reset for next frame
+		d.frameData = d.frameData[:0]
 		d.frameType = FrameTypeUnknown
 		return frame, nil
 	}
@@ -308,10 +308,9 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	return nil, nil
 }
 
-func (d *H264Depacketizer) depacketizeSTAPA(payload []byte) ([]byte, error) {
+func (d *H264Depacketizer) depacketizeSTAPA(payload []byte) error {
 	// Skip STAP-A header
 	offset := 1
-	var result []byte
 
 	for offset < len(payload) {
 		if offset+2 > len(payload) {
@@ -324,18 +323,28 @@ func (d *H264Depacketizer) depacketizeSTAPA(payload []byte) ([]byte, error) {
 			break
 		}
 
-		// Add start code + NAL unit
-		result = append(result, 0, 0, 0, 1)
-		result = append(result, payload[offset:offset+naluSize]...)
+		// Check NAL type for keyframe detection
+		if naluSize > 0 {
+			nalType := payload[offset] & 0x1F
+			if nalType == nalTypeIDR {
+				d.frameType = FrameTypeKey
+			} else if d.frameType != FrameTypeKey {
+				d.frameType = FrameTypeDelta
+			}
+		}
+
+		// Add start code + NAL unit to frame data
+		d.frameData = append(d.frameData, 0, 0, 0, 1)
+		d.frameData = append(d.frameData, payload[offset:offset+naluSize]...)
 		offset += naluSize
 	}
 
-	return result, nil
+	return nil
 }
 
-func (d *H264Depacketizer) depacketizeFUA(payload []byte) ([]byte, error) {
+func (d *H264Depacketizer) depacketizeFUA(payload []byte) error {
 	if len(payload) < 2 {
-		return nil, fmt.Errorf("FU-A packet too short")
+		return fmt.Errorf("FU-A packet too short")
 	}
 
 	fuIndicator := payload[0]
@@ -346,31 +355,43 @@ func (d *H264Depacketizer) depacketizeFUA(payload []byte) ([]byte, error) {
 	nalType := fuHeader & 0x1F
 
 	if isStart {
-		// Reconstruct NAL header
+		// Check for keyframe (IDR = type 5)
+		if nalType == nalTypeIDR {
+			d.frameType = FrameTypeKey
+		} else if d.frameType != FrameTypeKey {
+			d.frameType = FrameTypeDelta
+		}
+
+		// Reconstruct NAL header and start new FU-A buffer
 		nalHeader := (fuIndicator & 0xE0) | nalType
-		d.fragments = []byte{nalHeader}
+		d.fuaBuffer = d.fuaBuffer[:0]
+		d.fuaBuffer = append(d.fuaBuffer, nalHeader)
 		d.fragmenting = true
 	}
 
 	if !d.fragmenting {
-		return nil, nil
+		return nil
 	}
 
 	// Append fragment data (skip FU indicator and header)
-	d.fragments = append(d.fragments, payload[2:]...)
+	d.fuaBuffer = append(d.fuaBuffer, payload[2:]...)
 
 	if isEnd {
-		result := d.fragments
-		d.reset()
-		return result, nil
+		// FU-A complete - append to frame data with start code
+		d.frameData = append(d.frameData, 0, 0, 0, 1)
+		d.frameData = append(d.frameData, d.fuaBuffer...)
+		d.fuaBuffer = d.fuaBuffer[:0]
+		d.fragmenting = false
 	}
 
-	return nil, nil
+	return nil
 }
 
 func (d *H264Depacketizer) reset() {
-	d.fragments = nil
+	d.frameData = d.frameData[:0]
+	d.fuaBuffer = d.fuaBuffer[:0]
 	d.fragmenting = false
+	d.frameType = FrameTypeUnknown
 }
 
 // DepacketizeBytes processes raw RTP packet bytes.
@@ -385,7 +406,8 @@ func (d *H264Depacketizer) DepacketizeBytes(data []byte) (*EncodedFrame, error) 
 // Reset clears any buffered partial frames.
 func (d *H264Depacketizer) Reset() {
 	d.mu.Lock()
-	d.fragments = d.fragments[:0]
+	d.frameData = d.frameData[:0]
+	d.fuaBuffer = d.fuaBuffer[:0]
 	d.timestamp = 0
 	d.frameType = FrameTypeUnknown
 	d.fragmenting = false

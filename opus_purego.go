@@ -139,6 +139,16 @@ func getStreamOpusLibPaths() []string {
 		)
 	}
 
+	// Try source root (uses runtime.Caller - works in IDE/tests)
+	if root := findSourceRoot(); root != "" {
+		paths = append(paths, filepath.Join(root, "build", libName))
+	}
+
+	// Try module root
+	if root := findModuleRoot(); root != "" {
+		paths = append(paths, filepath.Join(root, "build", libName))
+	}
+
 	// Try to find based on working directory
 	if wd, err := os.Getwd(); err == nil {
 		paths = append(paths,

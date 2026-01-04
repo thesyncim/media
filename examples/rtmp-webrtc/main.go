@@ -430,8 +430,12 @@ func streamToViewer(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP
 			var outFrame *media.EncodedFrame
 			if needsTranscode && transcoder != nil {
 				outFrame, err = transcoder.Transcode(frame)
-				if err != nil || outFrame == nil {
+				if err != nil {
+					log.Printf("Transcode error: %v", err)
 					continue
+				}
+				if outFrame == nil {
+					continue // Decoder buffering
 				}
 			} else {
 				outFrame = frame

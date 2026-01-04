@@ -8,6 +8,7 @@ require (
 	github.com/ebitengine/purego v0.9.1
 	github.com/pion/rtp v1.8.25
 	github.com/pion/webrtc/v4 v4.1.6
+	github.com/yutopp/go-rtmp v0.0.7
 )
 
 require (
@@ -33,8 +34,6 @@ require (
 	github.com/sirupsen/logrus v1.7.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/yutopp/go-amf0 v0.1.0 // indirect
-	github.com/yutopp/go-flv v0.3.1 // indirect
-	github.com/yutopp/go-rtmp v0.0.7 // indirect
 	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect

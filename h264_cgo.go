@@ -190,6 +190,27 @@ func (e *H264Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 		return nil, fmt.Errorf("encoder not initialized")
 	}
 
+	// Validate frame data
+	if frame == nil {
+		return nil, fmt.Errorf("frame is nil")
+	}
+	if len(frame.Data) < 3 {
+		return nil, fmt.Errorf("frame requires 3 planes, got %d", len(frame.Data))
+	}
+	if len(frame.Data[0]) == 0 || len(frame.Data[1]) == 0 || len(frame.Data[2]) == 0 {
+		return nil, fmt.Errorf("frame planes cannot be empty: Y=%d U=%d V=%d",
+			len(frame.Data[0]), len(frame.Data[1]), len(frame.Data[2]))
+	}
+	if len(frame.Stride) < 3 || frame.Stride[0] <= 0 || frame.Stride[1] <= 0 {
+		return nil, fmt.Errorf("invalid strides: %v", frame.Stride)
+	}
+
+	// Validate dimensions match encoder configuration
+	if frame.Width != e.config.Width || frame.Height != e.config.Height {
+		return nil, fmt.Errorf("frame dimensions %dx%d don't match encoder %dx%d",
+			frame.Width, frame.Height, e.config.Width, e.config.Height)
+	}
+
 	forceKeyframe := C.int(0)
 	if e.keyframeReq.Swap(false) {
 		forceKeyframe = 1

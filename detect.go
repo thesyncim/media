@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // DetectVideoCodec detects the video codec from raw bitstream data.
@@ -333,6 +334,7 @@ func (d *AutoDecoder) Close() error {
 type Transcoder struct {
 	decoder VideoDecoder
 	encoder VideoEncoder
+	scaler  *VideoScaler // for dimension mismatch
 
 	inputCodec  VideoCodec
 	outputCodec VideoCodec
@@ -464,8 +466,31 @@ func (t *Transcoder) Transcode(input *EncodedFrame) (*EncodedFrame, error) {
 		return nil, nil // Decoder buffering
 	}
 
+	// Validate decoded frame has data
+	if len(rawFrame.Data) < 3 || len(rawFrame.Data[0]) == 0 || len(rawFrame.Data[1]) == 0 || len(rawFrame.Data[2]) == 0 {
+		return nil, nil // Invalid frame data, skip
+	}
+
+	// Scale if dimensions don't match encoder's expected dimensions
+	frameToEncode := rawFrame
+	if rawFrame.Width != t.config.Width || rawFrame.Height != t.config.Height {
+		// Create or update scaler
+		if t.scaler == nil ||
+			t.scaler.srcWidth != rawFrame.Width ||
+			t.scaler.srcHeight != rawFrame.Height ||
+			t.scaler.dstWidth != t.config.Width ||
+			t.scaler.dstHeight != t.config.Height {
+			t.scaler = NewVideoScaler(
+				rawFrame.Width, rawFrame.Height,
+				t.config.Width, t.config.Height,
+				ScaleModeStretch,
+			)
+		}
+		frameToEncode = t.scaler.Scale(rawFrame)
+	}
+
 	// Encode
-	return t.encoder.Encode(rawFrame)
+	return t.encoder.Encode(frameToEncode)
 }
 
 // TranscodeRaw encodes a raw frame (skips decode step).
@@ -580,6 +605,11 @@ type OutputConfig struct {
 
 	// Quality hint (codec-specific, 0-63 for VP8/VP9)
 	Quality int
+
+	// Passthrough skips decode+encode when input codec and resolution match.
+	// Use this when you want to forward the original stream without re-encoding.
+	// Note: Bitrate settings are ignored when passthrough is active.
+	Passthrough bool
 }
 
 // SimulcastPreset creates a common simulcast configuration.
@@ -645,9 +675,11 @@ func (r *TranscodeResult) Get(variantID string) *EncodedFrame {
 
 // outputPipeline holds encoder and optional scaler for a variant.
 type outputPipeline struct {
-	variant OutputConfig
-	encoder VideoEncoder
-	scaler  *VideoScaler
+	variant     OutputConfig
+	encoder     VideoEncoder // nil if passthrough
+	scaler      *VideoScaler
+	passthrough bool  // if true, forward input without encode
+	removed     int32 // atomic: 1 if marked for removal (encoder may still be in use)
 }
 
 // MultiTranscoder transcodes video to multiple output variants simultaneously.
@@ -670,7 +702,13 @@ type MultiTranscoder struct {
 	frameCh      chan *VideoFrame
 	frameCallback VideoFrameCallback
 
-	mu sync.Mutex
+	// Encoding timeout to prevent hangs
+	encodeTimeout time.Duration
+
+	// Concurrency control
+	inFlightEncodes int32 // atomic: tracks goroutines currently encoding
+
+	mu sync.RWMutex // RWMutex allows concurrent reads (RequestKeyframe, etc)
 }
 
 // MultiTranscoderConfig configures a multi-output transcoder.
@@ -686,6 +724,10 @@ type MultiTranscoderConfig struct {
 
 	// Optional: decoder thread count
 	DecoderThreads int
+
+	// EncodeTimeout is the maximum time to wait for all encoders.
+	// Default is 500ms. Set to 0 to wait forever (not recommended).
+	EncodeTimeout time.Duration
 }
 
 // NewMultiTranscoder creates a transcoder that outputs multiple variants.
@@ -710,17 +752,29 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 		}
 	}
 
-	mt := &MultiTranscoder{
-		inputCodec:  config.InputCodec,
-		inputWidth:  config.InputWidth,
-		inputHeight: config.InputHeight,
-		inputFPS:    config.InputFPS,
-		pipelines:   make(map[string]*outputPipeline),
+	encodeTimeout := config.EncodeTimeout
+	if encodeTimeout == 0 {
+		encodeTimeout = 500 * time.Millisecond // Default timeout
 	}
 
-	// Create encoders for each variant
+	mt := &MultiTranscoder{
+		inputCodec:    config.InputCodec,
+		inputWidth:    config.InputWidth,
+		inputHeight:   config.InputHeight,
+		inputFPS:      config.InputFPS,
+		pipelines:     make(map[string]*outputPipeline),
+		encodeTimeout: encodeTimeout,
+	}
+
+	// Create encoders for each variant (skip for passthrough)
 	for _, variant := range config.Outputs {
-		pipeline := &outputPipeline{variant: variant}
+		pipeline := &outputPipeline{variant: variant, passthrough: variant.Passthrough}
+
+		// For passthrough variants, no encoder needed
+		if variant.Passthrough {
+			mt.pipelines[variant.ID] = pipeline
+			continue
+		}
 
 		// Determine output dimensions
 		w, h := variant.Width, variant.Height
@@ -765,7 +819,9 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 		if err != nil {
 			// Clean up already created encoders
 			for _, p := range mt.pipelines {
-				p.encoder.Close()
+				if p.encoder != nil {
+					p.encoder.Close()
+				}
 			}
 			return nil, fmt.Errorf("failed to create encoder for %s: %w", variant.ID, err)
 		}
@@ -792,22 +848,57 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 // Transcode decodes the input and encodes to all configured output variants.
 // Auto-detects input codec on first call if not specified.
 // Returns nil results for variants where encoding produced no output (buffering).
+// Passthrough variants skip decode+encode when input codec matches.
 func (mt *MultiTranscoder) Transcode(input *EncodedFrame) (*TranscodeResult, error) {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 
 	// Auto-detect input codec if needed
-	if mt.decoder == nil {
-		codec := mt.inputCodec
+	if mt.inputCodec == VideoCodecUnknown {
+		codec := DetectVideoCodec(input.Data)
 		if codec == VideoCodecUnknown {
-			codec = DetectVideoCodec(input.Data)
-			if codec == VideoCodecUnknown {
-				return nil, errors.New("cannot detect input codec")
-			}
-			mt.inputCodec = codec
+			return nil, errors.New("cannot detect input codec")
 		}
+		mt.inputCodec = codec
+	}
 
-		decoder, err := CreateVideoDecoder(VideoDecoderConfig{Codec: codec})
+	result := &TranscodeResult{
+		Variants: make([]VariantFrame, 0, len(mt.pipelines)),
+	}
+
+	// Check if we have any passthrough variants that match
+	hasPassthrough := false
+	needsDecode := false
+	for _, pipeline := range mt.pipelines {
+		if pipeline.passthrough && pipeline.variant.Codec == mt.inputCodec {
+			hasPassthrough = true
+		} else if !pipeline.passthrough {
+			needsDecode = true
+		}
+	}
+
+	// Handle passthrough variants (no decode/encode needed)
+	if hasPassthrough {
+		for id, pipeline := range mt.pipelines {
+			if pipeline.passthrough && pipeline.variant.Codec == mt.inputCodec {
+				// Forward input directly - zero CPU cost
+				result.Variants = append(result.Variants, VariantFrame{
+					VariantID: id,
+					Frame:     input,
+					Codec:     pipeline.variant.Codec,
+				})
+			}
+		}
+	}
+
+	// If no variants need decoding, we're done
+	if !needsDecode {
+		return result, nil
+	}
+
+	// Create decoder on first use
+	if mt.decoder == nil {
+		decoder, err := CreateVideoDecoder(VideoDecoderConfig{Codec: mt.inputCodec})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create decoder: %w", err)
 		}
@@ -820,7 +911,11 @@ func (mt *MultiTranscoder) Transcode(input *EncodedFrame) (*TranscodeResult, err
 		return nil, err
 	}
 	if rawFrame == nil {
-		return nil, nil // Decoder buffering
+		// Decoder buffering - return any passthrough results we have
+		if len(result.Variants) > 0 {
+			return result, nil
+		}
+		return nil, nil
 	}
 
 	// Update input dimensions from decoded frame
@@ -829,7 +924,15 @@ func (mt *MultiTranscoder) Transcode(input *EncodedFrame) (*TranscodeResult, err
 		mt.inputHeight = rawFrame.Height
 	}
 
-	return mt.transcodeRaw(rawFrame)
+	// Encode non-passthrough variants
+	encodeResult, err := mt.transcodeRawNonPassthrough(rawFrame)
+	if err != nil {
+		return nil, err
+	}
+
+	// Merge encode results with passthrough results
+	result.Variants = append(result.Variants, encodeResult.Variants...)
+	return result, nil
 }
 
 // TranscodeRaw encodes a raw frame to all output variants (skips decode step).
@@ -841,61 +944,190 @@ func (mt *MultiTranscoder) TranscodeRaw(frame *VideoFrame) (*TranscodeResult, er
 }
 
 func (mt *MultiTranscoder) transcodeRaw(frame *VideoFrame) (*TranscodeResult, error) {
-	result := &TranscodeResult{
-		Variants: make([]VariantFrame, 0, len(mt.pipelines)),
+	return mt.transcodeRawNonPassthrough(frame)
+}
+
+// transcodeRawNonPassthrough encodes raw frame to non-passthrough variants only.
+func (mt *MultiTranscoder) transcodeRawNonPassthrough(frame *VideoFrame) (*TranscodeResult, error) {
+	// Count non-passthrough pipelines (excluding removed ones)
+	var nonPassthrough []*outputPipeline
+	var ids []string
+	for id, pipeline := range mt.pipelines {
+		// Skip removed or passthrough pipelines
+		if atomic.LoadInt32(&pipeline.removed) == 1 {
+			continue
+		}
+		if !pipeline.passthrough && pipeline.encoder != nil {
+			nonPassthrough = append(nonPassthrough, pipeline)
+			ids = append(ids, id)
+		}
 	}
 
-	for id, pipeline := range mt.pipelines {
-		// Scale if needed
-		inputFrame := frame
-		targetW := pipeline.variant.Width
-		targetH := pipeline.variant.Height
-		if targetW == 0 {
-			targetW = frame.Width
-		}
-		if targetH == 0 {
-			targetH = frame.Height
-		}
+	if len(nonPassthrough) == 0 {
+		return &TranscodeResult{}, nil
+	}
 
-		if frame.Width != targetW || frame.Height != targetH {
-			// Create or update scaler
-			if pipeline.scaler == nil ||
-				pipeline.scaler.srcWidth != frame.Width ||
-				pipeline.scaler.srcHeight != frame.Height ||
-				pipeline.scaler.dstWidth != targetW ||
-				pipeline.scaler.dstHeight != targetH {
-				pipeline.scaler = NewVideoScaler(
-					frame.Width, frame.Height,
-					targetW, targetH,
-					ScaleModeStretch,
-				)
-			}
-			inputFrame = pipeline.scaler.Scale(frame)
-		}
+	// For single output, encode directly without goroutine overhead
+	if len(nonPassthrough) == 1 {
+		return mt.transcodeRawSinglePipeline(frame, ids[0], nonPassthrough[0])
+	}
 
-		// Encode
-		encoded, err := pipeline.encoder.Encode(inputFrame)
-		if err != nil {
-			return nil, fmt.Errorf("encode error for %s: %w", id, err)
-		}
+	// For multiple outputs, encode in parallel for better performance
+	return mt.transcodeRawParallelPipelines(frame, ids, nonPassthrough)
+}
 
-		if encoded != nil {
-			result.Variants = append(result.Variants, VariantFrame{
-				VariantID: id,
-				Frame:     encoded,
-				Codec:     pipeline.variant.Codec,
-			})
-		}
+// transcodeRawSinglePipeline handles single pipeline without goroutine overhead.
+func (mt *MultiTranscoder) transcodeRawSinglePipeline(frame *VideoFrame, id string, pipeline *outputPipeline) (*TranscodeResult, error) {
+	result := &TranscodeResult{
+		Variants: make([]VariantFrame, 0, 1),
+	}
+
+	inputFrame := mt.prepareInputFrame(frame, pipeline)
+	encoded, err := pipeline.encoder.Encode(inputFrame)
+	if err != nil {
+		return nil, fmt.Errorf("encode error for %s: %w", id, err)
+	}
+
+	if encoded != nil {
+		result.Variants = append(result.Variants, VariantFrame{
+			VariantID: id,
+			Frame:     encoded,
+			Codec:     pipeline.variant.Codec,
+		})
 	}
 
 	return result, nil
+}
+
+// transcodeRawParallelPipelines encodes to multiple pipelines concurrently.
+func (mt *MultiTranscoder) transcodeRawParallelPipelines(frame *VideoFrame, ids []string, pipelines []*outputPipeline) (*TranscodeResult, error) {
+	numPipelines := len(pipelines)
+
+	// Check if too many encodes are already in flight (prevents goroutine accumulation)
+	const maxInFlight = 100 // Max concurrent encoder goroutines
+	if atomic.LoadInt32(&mt.inFlightEncodes) > maxInFlight {
+		return nil, errors.New("too many in-flight encodes, dropping frame")
+	}
+
+	type encodeResult struct {
+		id    string
+		frame *EncodedFrame
+		codec VideoCodec
+		err   error
+	}
+
+	resultCh := make(chan encodeResult, numPipelines)
+
+	// Launch parallel encoders
+	for i, pipeline := range pipelines {
+		atomic.AddInt32(&mt.inFlightEncodes, 1)
+		go func(variantID string, p *outputPipeline) {
+			defer atomic.AddInt32(&mt.inFlightEncodes, -1)
+
+			// Check if pipeline was removed before we start encoding
+			if atomic.LoadInt32(&p.removed) == 1 {
+				resultCh <- encodeResult{id: variantID, err: errors.New("pipeline removed")}
+				return
+			}
+
+			inputFrame := mt.prepareInputFrame(frame, p)
+
+			// Check again after scaling (which can be slow)
+			if atomic.LoadInt32(&p.removed) == 1 {
+				resultCh <- encodeResult{id: variantID, err: errors.New("pipeline removed")}
+				return
+			}
+
+			encoded, err := p.encoder.Encode(inputFrame)
+			resultCh <- encodeResult{
+				id:    variantID,
+				frame: encoded,
+				codec: p.variant.Codec,
+				err:   err,
+			}
+		}(ids[i], pipeline)
+	}
+
+	// Collect results with timeout
+	result := &TranscodeResult{
+		Variants: make([]VariantFrame, 0, numPipelines),
+	}
+
+	var firstErr error
+	timeout := time.After(mt.encodeTimeout)
+	received := 0
+
+	for received < numPipelines {
+		select {
+		case res := <-resultCh:
+			received++
+			if res.err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("encode error for %s: %w", res.id, res.err)
+				continue
+			}
+			if res.frame != nil {
+				result.Variants = append(result.Variants, VariantFrame{
+					VariantID: res.id,
+					Frame:     res.frame,
+					Codec:     res.codec,
+				})
+			}
+		case <-timeout:
+			// Some encoders timed out - return what we have
+			if firstErr == nil {
+				firstErr = fmt.Errorf("encode timeout: got %d/%d results", received, numPipelines)
+			}
+			// Return partial results so we don't block
+			if len(result.Variants) > 0 {
+				return result, nil // Return partial success
+			}
+			return nil, firstErr
+		}
+	}
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	return result, nil
+}
+
+// prepareInputFrame scales the frame if needed for the target pipeline.
+func (mt *MultiTranscoder) prepareInputFrame(frame *VideoFrame, pipeline *outputPipeline) *VideoFrame {
+	targetW := pipeline.variant.Width
+	targetH := pipeline.variant.Height
+	if targetW == 0 {
+		targetW = frame.Width
+	}
+	if targetH == 0 {
+		targetH = frame.Height
+	}
+
+	// No scaling needed
+	if frame.Width == targetW && frame.Height == targetH {
+		return frame
+	}
+
+	// Create or update scaler (thread-safe: each pipeline has its own scaler)
+	if pipeline.scaler == nil ||
+		pipeline.scaler.srcWidth != frame.Width ||
+		pipeline.scaler.srcHeight != frame.Height ||
+		pipeline.scaler.dstWidth != targetW ||
+		pipeline.scaler.dstHeight != targetH {
+		pipeline.scaler = NewVideoScaler(
+			frame.Width, frame.Height,
+			targetW, targetH,
+			ScaleModeStretch,
+		)
+	}
+	return pipeline.scaler.Scale(frame)
 }
 
 // RequestKeyframe requests a keyframe from a specific variant.
 func (mt *MultiTranscoder) RequestKeyframe(variantID string) {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
-	if pipeline, ok := mt.pipelines[variantID]; ok {
+	if pipeline, ok := mt.pipelines[variantID]; ok && pipeline.encoder != nil {
 		pipeline.encoder.RequestKeyframe()
 	}
 }
@@ -905,7 +1137,9 @@ func (mt *MultiTranscoder) RequestKeyframeAll() {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 	for _, pipeline := range mt.pipelines {
-		pipeline.encoder.RequestKeyframe()
+		if pipeline.encoder != nil {
+			pipeline.encoder.RequestKeyframe()
+		}
 	}
 }
 
@@ -913,10 +1147,14 @@ func (mt *MultiTranscoder) RequestKeyframeAll() {
 func (mt *MultiTranscoder) SetBitrate(variantID string, bitrateBps int) error {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
-	if pipeline, ok := mt.pipelines[variantID]; ok {
-		return pipeline.encoder.SetBitrate(bitrateBps)
+	pipeline, ok := mt.pipelines[variantID]
+	if !ok {
+		return errors.New("variant not found: " + variantID)
 	}
-	return errors.New("variant not found: " + variantID)
+	if pipeline.encoder == nil {
+		return errors.New("cannot set bitrate on passthrough variant: " + variantID)
+	}
+	return pipeline.encoder.SetBitrate(bitrateBps)
 }
 
 // Variants returns the list of output variant IDs.
@@ -940,6 +1178,118 @@ func (mt *MultiTranscoder) VariantConfig(variantID string) (OutputConfig, bool) 
 	return OutputConfig{}, false
 }
 
+// AddOutput adds a new output variant dynamically.
+// The new variant will be available for the next Transcode call.
+// Thread-safe: can be called while transcoding is in progress.
+func (mt *MultiTranscoder) AddOutput(config OutputConfig) error {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+
+	if config.ID == "" {
+		return errors.New("output variant ID cannot be empty")
+	}
+	if _, exists := mt.pipelines[config.ID]; exists {
+		return errors.New("output variant already exists: " + config.ID)
+	}
+	if config.Codec == VideoCodecUnknown {
+		return errors.New("output codec must be specified")
+	}
+
+	pipeline := &outputPipeline{variant: config, passthrough: config.Passthrough}
+
+	// For passthrough variants, no encoder needed
+	if config.Passthrough {
+		mt.pipelines[config.ID] = pipeline
+		return nil
+	}
+
+	// Determine output dimensions
+	w, h := config.Width, config.Height
+	if w == 0 {
+		w = mt.inputWidth
+	}
+	if h == 0 {
+		h = mt.inputHeight
+	}
+	if w == 0 {
+		w = 1920
+	}
+	if h == 0 {
+		h = 1080
+	}
+
+	fps := config.FPS
+	if fps == 0 {
+		fps = mt.inputFPS
+	}
+	if fps == 0 {
+		fps = 30
+	}
+
+	bitrate := config.BitrateBps
+	if bitrate == 0 {
+		bitrate = 2_000_000
+	}
+
+	encoderConfig := VideoEncoderConfig{
+		Codec:          config.Codec,
+		Width:          w,
+		Height:         h,
+		FPS:            fps,
+		BitrateBps:     bitrate,
+		Quality:        config.Quality,
+		TemporalLayers: config.TemporalLayers,
+		SpatialLayers:  config.SpatialLayers,
+	}
+
+	encoder, err := CreateVideoEncoder(encoderConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create encoder for %s: %w", config.ID, err)
+	}
+
+	pipeline.encoder = encoder
+	mt.pipelines[config.ID] = pipeline
+	return nil
+}
+
+// RemoveOutput removes an output variant dynamically.
+// Thread-safe: can be called while transcoding is in progress.
+// The variant will no longer appear in TranscodeResult after removal.
+// Note: If encoding is in progress, the encoder is marked for removal and
+// will be cleaned up on the next Transcode call.
+func (mt *MultiTranscoder) RemoveOutput(variantID string) error {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+
+	pipeline, exists := mt.pipelines[variantID]
+	if !exists {
+		return errors.New("variant not found: " + variantID)
+	}
+
+	// Mark as removed - encoding goroutines will skip this pipeline
+	atomic.StoreInt32(&pipeline.removed, 1)
+
+	// Try to close encoder, but don't block if it's in use
+	// The encoder will be cleaned up on the next Transcode call
+	go func(p *outputPipeline) {
+		// Give in-flight encoding a moment to complete
+		time.Sleep(100 * time.Millisecond)
+		if p.encoder != nil {
+			p.encoder.Close()
+		}
+	}(pipeline)
+
+	delete(mt.pipelines, variantID)
+	return nil
+}
+
+// OutputCount returns the number of active output variants.
+func (mt *MultiTranscoder) OutputCount() int {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	return len(mt.pipelines)
+}
+
 // InputCodec returns the detected or configured input codec.
 func (mt *MultiTranscoder) InputCodec() VideoCodec {
 	mt.mu.Lock()
@@ -961,8 +1311,10 @@ func (mt *MultiTranscoder) Close() error {
 		}
 	}
 	for _, pipeline := range mt.pipelines {
-		if err := pipeline.encoder.Close(); err != nil {
-			errs = append(errs, err)
+		if pipeline.encoder != nil {
+			if err := pipeline.encoder.Close(); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	if len(errs) > 0 {

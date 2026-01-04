@@ -62,8 +62,9 @@ ifeq ($(UNAME_S),Linux)
         VPX_LDFLAGS := -lvpx -lm
         OPUS_CFLAGS := $(CFLAGS_COMMON)
         OPUS_LDFLAGS := -lopus -lm
+        # H264: x264 for encoder, OpenH264 for decoder (loaded dynamically via dlopen)
         H264_CFLAGS := $(CFLAGS_COMMON)
-        H264_LDFLAGS := -lx264 -lm -lpthread
+        H264_LDFLAGS := -lx264 -lm -lpthread -ldl
         AV1_CFLAGS := $(CFLAGS_COMMON)
         AV1_LDFLAGS := -laom -lm -lpthread
     else
@@ -76,6 +77,7 @@ ifeq ($(UNAME_S),Linux)
         VPX_LDFLAGS := $(LOCAL_VPX_LIB) -lm -lpthread
         OPUS_CFLAGS := $(CFLAGS_COMMON) -I$(LIBOPUS_DIR)/include
         OPUS_LDFLAGS := $(LOCAL_OPUS_LIB) -lm
+        # H264: x264 static lib for encoder, OpenH264 for decoder (loaded dynamically via dlopen)
         H264_CFLAGS := $(CFLAGS_COMMON) -I$(X264_DIR)
         H264_LDFLAGS := $(LOCAL_X264_LIB) -lm -lpthread -ldl
         AV1_CFLAGS := $(CFLAGS_COMMON) -I$(LIBAOM_DIR)
@@ -113,6 +115,7 @@ ifeq ($(UNAME_S),Darwin)
         OPUS_CFLAGS := $(CFLAGS_COMMON) -I$(OPUS_INCLUDE)
         OPUS_LDFLAGS := -L$(OPUS_LIB_PATH) -Wl,-rpath,$(OPUS_LIB_PATH) -lopus \
                         -Wl,-install_name,@rpath/libstream_opus.dylib
+        # H264: x264 for encoder, OpenH264 for decoder (loaded dynamically via dlopen)
         H264_CFLAGS := $(CFLAGS_COMMON) -I$(X264_INCLUDE)
         H264_LDFLAGS := -L$(X264_LIB_PATH) -Wl,-rpath,$(X264_LIB_PATH) -lx264 \
                         -Wl,-install_name,@rpath/libstream_h264.dylib
@@ -125,12 +128,14 @@ ifeq ($(UNAME_S),Darwin)
         LOCAL_OPUS_LIB := $(LIBOPUS_DIR)/.libs/libopus.a
         LOCAL_X264_LIB := $(X264_DIR)/libx264.a
         LOCAL_AOM_LIB := $(LIBAOM_BUILD_DIR)/libaom.a
+
         VPX_CFLAGS := $(CFLAGS_COMMON) -I$(LIBVPX_DIR)
         VPX_LDFLAGS := $(LOCAL_VPX_LIB) -lm -lpthread \
                        -Wl,-install_name,@rpath/libstream_vpx.dylib
         OPUS_CFLAGS := $(CFLAGS_COMMON) -I$(LIBOPUS_DIR)/include
         OPUS_LDFLAGS := $(LOCAL_OPUS_LIB) -lm \
                         -Wl,-install_name,@rpath/libstream_opus.dylib
+        # H264: x264 static lib for encoder, OpenH264 for decoder (loaded dynamically via dlopen)
         H264_CFLAGS := $(CFLAGS_COMMON) -I$(X264_DIR)
         H264_LDFLAGS := $(LOCAL_X264_LIB) -lm -lpthread \
                         -Wl,-install_name,@rpath/libstream_h264.dylib

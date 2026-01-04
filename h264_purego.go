@@ -154,7 +154,15 @@ func getStreamH264LibPaths() []string {
 		)
 	}
 
-	// Search relative to module root (find go.mod)
+	// Search relative to source root (uses runtime.Caller - works in IDE/tests)
+	if sourceRoot := findSourceRoot(); sourceRoot != "" {
+		paths = append(paths,
+			filepath.Join(sourceRoot, "build", libName),
+			filepath.Join(sourceRoot, "build", "ffi", libName),
+		)
+	}
+
+	// Search relative to module root (find go.mod from cwd)
 	if moduleRoot := findModuleRoot(); moduleRoot != "" {
 		paths = append(paths,
 			filepath.Join(moduleRoot, "build", libName),

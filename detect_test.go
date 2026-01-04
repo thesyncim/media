@@ -1064,3 +1064,1382 @@ func TestAbs64(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// Comprehensive Transcoder Tests
+// =============================================================================
+
+// --- Test Helpers ---
+
+// createEncodedTestFrame creates an encoded frame for a given codec
+func createEncodedTestFrame(t *testing.T, codec VideoCodec, width, height int, keyframe bool) *EncodedFrame {
+	t.Helper()
+
+	// Create a raw frame
+	raw := createTestVideoFrame(width, height)
+
+	// Create encoder
+	var enc VideoEncoder
+	var err error
+
+	switch codec {
+	case VideoCodecVP8:
+		if !IsVP8Available() {
+			t.Skipf("VP8 not available")
+		}
+		enc, err = NewVP8Encoder(VideoEncoderConfig{
+			Width: width, Height: height, BitrateBps: 1_000_000, FPS: 30,
+		})
+	case VideoCodecVP9:
+		if !IsVP9Available() {
+			t.Skipf("VP9 not available")
+		}
+		enc, err = NewVP9Encoder(VideoEncoderConfig{
+			Width: width, Height: height, BitrateBps: 1_000_000, FPS: 30,
+		})
+	case VideoCodecH264:
+		if !IsH264EncoderAvailable() {
+			t.Skipf("H264 encoder not available")
+		}
+		enc, err = NewH264Encoder(VideoEncoderConfig{
+			Width: width, Height: height, BitrateBps: 1_000_000, FPS: 30,
+		})
+	default:
+		t.Fatalf("unsupported codec: %v", codec)
+	}
+	if err != nil {
+		t.Fatalf("failed to create encoder: %v", err)
+	}
+	defer enc.Close()
+
+	// Request keyframe if needed
+	if keyframe {
+		enc.RequestKeyframe()
+	}
+
+	// Encode multiple frames to handle buffering (especially VP9)
+	var encoded *EncodedFrame
+	for i := 0; i < 60 && encoded == nil; i++ {
+		raw.Timestamp = int64(i) * 33_333_333 // 30fps
+		encoded, err = enc.Encode(raw)
+		if err != nil {
+			t.Fatalf("encode failed: %v", err)
+		}
+	}
+
+	if encoded == nil {
+		t.Fatal("failed to get encoded frame after 60 attempts")
+	}
+
+	// Make a copy since encoder may reuse buffer
+	dataCopy := make([]byte, len(encoded.Data))
+	copy(dataCopy, encoded.Data)
+
+	return &EncodedFrame{
+		Data:      dataCopy,
+		Timestamp: encoded.Timestamp,
+		FrameType: encoded.FrameType,
+	}
+}
+
+// createTestVideoFrame creates a test I420 video frame with gradient pattern
+func createTestVideoFrame(width, height int) *VideoFrame {
+	ySize := width * height
+	uvSize := (width / 2) * (height / 2)
+
+	yPlane := make([]byte, ySize)
+	uPlane := make([]byte, uvSize)
+	vPlane := make([]byte, uvSize)
+
+	// Fill Y with gradient pattern
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			yPlane[y*width+x] = byte((x + y) % 256)
+		}
+	}
+
+	// Fill U/V with neutral values + slight variation
+	for y := 0; y < height/2; y++ {
+		for x := 0; x < width/2; x++ {
+			uPlane[y*(width/2)+x] = byte(128 + (x%10))
+			vPlane[y*(width/2)+x] = byte(128 + (y%10))
+		}
+	}
+
+	return &VideoFrame{
+		Width:  width,
+		Height: height,
+		Format: PixelFormatI420,
+		Data:   [][]byte{yPlane, uPlane, vPlane},
+		Stride: []int{width, width / 2, width / 2},
+	}
+}
+
+// verifyDecodedFrame validates that a decoded frame has correct properties
+func verifyDecodedFrame(t *testing.T, frame *VideoFrame, minWidth, minHeight int) {
+	t.Helper()
+
+	if frame.Width < minWidth || frame.Height < minHeight {
+		t.Errorf("frame dimensions %dx%d smaller than expected %dx%d",
+			frame.Width, frame.Height, minWidth, minHeight)
+	}
+
+	// Verify Y plane
+	expectedYSize := frame.Width * frame.Height
+	if len(frame.Data[0]) < expectedYSize {
+		t.Errorf("Y plane too small: %d < %d", len(frame.Data[0]), expectedYSize)
+	}
+
+	// Verify U/V planes
+	expectedUVSize := (frame.Width / 2) * (frame.Height / 2)
+	if len(frame.Data[1]) < expectedUVSize || len(frame.Data[2]) < expectedUVSize {
+		t.Errorf("U/V planes too small: %d, %d < %d",
+			len(frame.Data[1]), len(frame.Data[2]), expectedUVSize)
+	}
+
+	// Verify pixel data has variance (not all zeros)
+	hasVariance := false
+	first := frame.Data[0][0]
+	for _, v := range frame.Data[0][:min(1000, len(frame.Data[0]))] {
+		if v != first {
+			hasVariance = true
+			break
+		}
+	}
+	if !hasVariance {
+		t.Error("Y plane has no variance")
+	}
+}
+
+// --- Single Transcoder Codec Combination Tests ---
+
+func TestTranscoder_AllCodecCombinations(t *testing.T) {
+	// Define all codec combinations to test
+	combos := []struct {
+		from, to VideoCodec
+	}{
+		{VideoCodecVP8, VideoCodecVP8},
+		{VideoCodecVP8, VideoCodecVP9},
+		{VideoCodecVP8, VideoCodecH264},
+		{VideoCodecVP9, VideoCodecVP8},
+		{VideoCodecVP9, VideoCodecVP9},
+		{VideoCodecVP9, VideoCodecH264},
+		{VideoCodecH264, VideoCodecVP8},
+		{VideoCodecH264, VideoCodecVP9},
+		{VideoCodecH264, VideoCodecH264},
+	}
+
+	for _, combo := range combos {
+		name := combo.from.String() + "_to_" + combo.to.String()
+		t.Run(name, func(t *testing.T) {
+			// Check codec availability
+			switch combo.from {
+			case VideoCodecVP8:
+				if !IsVP8Available() {
+					t.Skip("VP8 not available")
+				}
+			case VideoCodecVP9:
+				if !IsVP9Available() {
+					t.Skip("VP9 not available")
+				}
+			case VideoCodecH264:
+				if !IsH264DecoderAvailable() {
+					t.Skip("H264 decoder not available")
+				}
+			}
+			switch combo.to {
+			case VideoCodecVP8:
+				if !IsVP8Available() {
+					t.Skip("VP8 not available")
+				}
+			case VideoCodecVP9:
+				if !IsVP9Available() {
+					t.Skip("VP9 not available")
+				}
+			case VideoCodecH264:
+				if !IsH264EncoderAvailable() {
+					t.Skip("H264 encoder not available")
+				}
+			}
+
+			// Create transcoder
+			transcoder, err := NewTranscoder(TranscoderConfig{
+				InputCodec:  combo.from,
+				OutputCodec: combo.to,
+				Width:       640,
+				Height:      480,
+				BitrateBps:  500_000,
+				FPS:         30,
+			})
+			if err != nil {
+				t.Fatalf("failed to create transcoder: %v", err)
+			}
+			defer transcoder.Close()
+
+			// Create encoded input frame
+			input := createEncodedTestFrame(t, combo.from, 640, 480, true)
+
+			// Transcode
+			output, err := transcoder.Transcode(input)
+			if err != nil {
+				t.Fatalf("transcode failed: %v", err)
+			}
+			if output == nil {
+				// May need more frames for buffering
+				raw := createTestVideoFrame(640, 480)
+				for i := 0; i < 30 && output == nil; i++ {
+					output, _ = transcoder.TranscodeRaw(raw)
+				}
+			}
+			if output == nil {
+				t.Skip("transcoder still buffering - may need more frames")
+			}
+
+			// Verify output
+			if len(output.Data) == 0 {
+				t.Error("output frame has no data")
+			}
+
+			// Decode and verify
+			var dec VideoDecoder
+			switch combo.to {
+			case VideoCodecVP8:
+				dec, err = NewVP8Decoder(VideoDecoderConfig{})
+			case VideoCodecVP9:
+				dec, err = NewVP9Decoder(VideoDecoderConfig{})
+			case VideoCodecH264:
+				dec, err = NewH264Decoder(VideoDecoderConfig{})
+			}
+			if err != nil {
+				t.Fatalf("failed to create decoder: %v", err)
+			}
+			defer dec.Close()
+
+			decoded, err := dec.Decode(output)
+			if err != nil {
+				t.Fatalf("decode failed: %v", err)
+			}
+			if decoded != nil {
+				verifyDecodedFrame(t, decoded, 320, 240) // Allow some variance
+				t.Logf("%s -> %s: decoded %dx%d", combo.from, combo.to, decoded.Width, decoded.Height)
+			}
+		})
+	}
+}
+
+func TestTranscoder_KeyframeRequest(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	transcoder, err := NewTranscoder(TranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		OutputCodec: VideoCodecVP8,
+		Width:       640,
+		Height:      480,
+		BitrateBps:  500_000,
+		FPS:         30,
+	})
+	if err != nil {
+		t.Fatalf("failed to create transcoder: %v", err)
+	}
+	defer transcoder.Close()
+
+	// Encode several frames first
+	raw := createTestVideoFrame(640, 480)
+	var frameCount int
+	for i := 0; i < 60; i++ {
+		output, err := transcoder.TranscodeRaw(raw)
+		if err != nil {
+			t.Fatalf("transcode failed: %v", err)
+		}
+		if output != nil {
+			frameCount++
+			if frameCount > 5 {
+				// Now request keyframe
+				transcoder.RequestKeyframe()
+
+				// Next frame should be keyframe
+				for j := 0; j < 5; j++ {
+					output, _ = transcoder.TranscodeRaw(raw)
+					if output != nil && output.FrameType == FrameTypeKey {
+						t.Log("Keyframe received after request")
+						return
+					}
+				}
+			}
+		}
+	}
+	t.Log("Keyframe request test completed (may not have received explicit keyframe)")
+}
+
+// --- MultiTranscoder Tests ---
+
+func TestMultiTranscoder_MultiCodecOutput(t *testing.T) {
+	// Check all required codecs
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+	if !IsVP9Available() {
+		t.Skip("VP9 not available")
+	}
+	if !IsH264EncoderAvailable() || !IsH264DecoderAvailable() {
+		t.Skip("H264 not available")
+	}
+
+	// Create multi-transcoder with 3 different codec outputs
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecH264,
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "vp8", Codec: VideoCodecVP8, BitrateBps: 500_000},
+			{ID: "vp9", Codec: VideoCodecVP9, BitrateBps: 500_000},
+			{ID: "h264", Codec: VideoCodecH264, BitrateBps: 500_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	// Create input frame
+	input := createEncodedTestFrame(t, VideoCodecH264, 640, 480, true)
+
+	// Transcode
+	result, err := mt.Transcode(input)
+	if err != nil {
+		t.Fatalf("transcode failed: %v", err)
+	}
+
+	// May need more frames due to buffering
+	if result == nil || len(result.Variants) < 3 {
+		raw := createTestVideoFrame(640, 480)
+		for i := 0; i < 30 && (result == nil || len(result.Variants) < 3); i++ {
+			result, _ = mt.TranscodeRaw(raw)
+		}
+	}
+
+	if result == nil {
+		t.Skip("multi-transcoder still buffering")
+	}
+
+	// Verify all variants present
+	variants := mt.Variants()
+	if len(variants) != 3 {
+		t.Errorf("expected 3 variants, got %d", len(variants))
+	}
+
+	t.Logf("Multi-codec output: %d variants", len(result.Variants))
+	for _, v := range result.Variants {
+		if v.Frame != nil {
+			t.Logf("  %s: %d bytes", v.VariantID, len(v.Frame.Data))
+		}
+	}
+}
+
+func TestMultiTranscoder_SimulcastPreset(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	outputs := SimulcastPreset(VideoCodecVP8, 2_000_000)
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  1920,
+		InputHeight: 1080,
+		InputFPS:    30,
+		Outputs:     outputs,
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	// Transcode raw frame
+	raw := createTestVideoFrame(1920, 1080)
+
+	var result *TranscodeResult
+	for i := 0; i < 60 && result == nil; i++ {
+		result, _ = mt.TranscodeRaw(raw)
+	}
+
+	if result == nil {
+		t.Skip("simulcast transcoder still buffering")
+	}
+
+	// Verify we got all 3 variants
+	if len(result.Variants) != 3 {
+		t.Errorf("expected 3 variants, got %d", len(result.Variants))
+	}
+
+	t.Logf("Simulcast output: %d variants", len(result.Variants))
+}
+
+// --- Performance Tests (Critical: No Lag for Multiple Outputs) ---
+
+func TestMultiTranscoder_LatencyBudget(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	// Test latency with different number of outputs
+	tests := []struct {
+		name       string
+		numOutputs int
+		maxLatency time.Duration
+	}{
+		{"1_output", 1, 15 * time.Millisecond},
+		{"2_outputs", 2, 20 * time.Millisecond},
+		{"3_outputs", 3, 30 * time.Millisecond},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			outputs := make([]OutputConfig, tc.numOutputs)
+			for i := 0; i < tc.numOutputs; i++ {
+				outputs[i] = OutputConfig{
+					ID:         "output_" + string(rune('A'+i)),
+					Codec:      VideoCodecVP8,
+					Width:      640,
+					Height:     480,
+					BitrateBps: 500_000,
+				}
+			}
+
+			mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+				InputCodec:  VideoCodecVP8,
+				InputWidth:  640,
+				InputHeight: 480,
+				InputFPS:    30,
+				Outputs:     outputs,
+			})
+			if err != nil {
+				t.Fatalf("failed to create transcoder: %v", err)
+			}
+			defer mt.Close()
+
+			raw := createTestVideoFrame(640, 480)
+
+			// Warm up (get encoder past buffering)
+			for i := 0; i < 60; i++ {
+				mt.TranscodeRaw(raw)
+			}
+
+			// Measure latency over 30 frames
+			var totalLatency time.Duration
+			var measuredFrames int
+
+			for i := 0; i < 30; i++ {
+				start := time.Now()
+				result, err := mt.TranscodeRaw(raw)
+				latency := time.Since(start)
+
+				if err == nil && result != nil && len(result.Variants) == tc.numOutputs {
+					totalLatency += latency
+					measuredFrames++
+				}
+			}
+
+			if measuredFrames == 0 {
+				t.Skip("no frames produced for measurement")
+			}
+
+			avgLatency := totalLatency / time.Duration(measuredFrames)
+			t.Logf("%s: avg latency = %v (budget = %v)", tc.name, avgLatency, tc.maxLatency)
+
+			if avgLatency > tc.maxLatency {
+				t.Errorf("latency %v exceeds budget %v", avgLatency, tc.maxLatency)
+			}
+		})
+	}
+}
+
+func TestMultiTranscoder_SustainedThroughput(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	outputs := SimulcastPreset(VideoCodecVP8, 1_000_000)
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  1280,
+		InputHeight: 720,
+		InputFPS:    30,
+		Outputs:     outputs,
+	})
+	if err != nil {
+		t.Fatalf("failed to create transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	raw := createTestVideoFrame(1280, 720)
+
+	// Warm up
+	for i := 0; i < 60; i++ {
+		mt.TranscodeRaw(raw)
+	}
+
+	// Test sustained throughput for 5 seconds at 30fps
+	targetFPS := 30
+	duration := 5 * time.Second
+	targetFrames := int(duration.Seconds()) * targetFPS
+
+	var successFrames int
+	var latencies []time.Duration
+
+	start := time.Now()
+	for i := 0; i < targetFrames; i++ {
+		frameStart := time.Now()
+		result, err := mt.TranscodeRaw(raw)
+		latency := time.Since(frameStart)
+
+		if err == nil && result != nil {
+			successFrames++
+			latencies = append(latencies, latency)
+		}
+
+		// Pace to target FPS
+		elapsed := time.Since(start)
+		expected := time.Duration(i+1) * time.Second / time.Duration(targetFPS)
+		if elapsed < expected {
+			time.Sleep(expected - elapsed)
+		}
+	}
+
+	// Calculate stats
+	actualDuration := time.Since(start)
+	actualFPS := float64(successFrames) / actualDuration.Seconds()
+
+	var avgLatency, maxLatency time.Duration
+	if len(latencies) > 0 {
+		for _, l := range latencies {
+			avgLatency += l
+			if l > maxLatency {
+				maxLatency = l
+			}
+		}
+		avgLatency /= time.Duration(len(latencies))
+	}
+
+	t.Logf("Sustained throughput test:")
+	t.Logf("  Target: %d fps for %v", targetFPS, duration)
+	t.Logf("  Achieved: %.1f fps, %d/%d frames", actualFPS, successFrames, targetFrames)
+	t.Logf("  Latency: avg=%v, max=%v", avgLatency, maxLatency)
+
+	// Should achieve at least 90% of target
+	if float64(successFrames)/float64(targetFrames) < 0.9 {
+		t.Errorf("only achieved %d/%d frames (%.1f%%)",
+			successFrames, targetFrames, float64(successFrames)/float64(targetFrames)*100)
+	}
+}
+
+func TestMultiTranscoder_NoLagMultipleOutputs(t *testing.T) {
+	if !IsVP8Available() || !IsVP9Available() {
+		t.Skip("VP8 or VP9 not available")
+	}
+
+	// Create multi-output transcoder
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "vp8_high", Codec: VideoCodecVP8, Width: 640, Height: 480, BitrateBps: 1_000_000},
+			{ID: "vp8_low", Codec: VideoCodecVP8, Width: 320, Height: 240, BitrateBps: 300_000},
+			{ID: "vp9", Codec: VideoCodecVP9, Width: 640, Height: 480, BitrateBps: 800_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	raw := createTestVideoFrame(640, 480)
+
+	// Warm up
+	for i := 0; i < 60; i++ {
+		mt.TranscodeRaw(raw)
+	}
+
+	// Run 100 frames and check for lag buildup
+	var latencies []time.Duration
+	for i := 0; i < 100; i++ {
+		start := time.Now()
+		result, _ := mt.TranscodeRaw(raw)
+		latency := time.Since(start)
+
+		if result != nil {
+			latencies = append(latencies, latency)
+		}
+	}
+
+	if len(latencies) < 50 {
+		t.Skip("not enough frames for analysis")
+	}
+
+	// Compare first half vs second half latency (should not increase)
+	half := len(latencies) / 2
+	var firstHalfAvg, secondHalfAvg time.Duration
+	for i := 0; i < half; i++ {
+		firstHalfAvg += latencies[i]
+		secondHalfAvg += latencies[half+i]
+	}
+	firstHalfAvg /= time.Duration(half)
+	secondHalfAvg /= time.Duration(half)
+
+	t.Logf("Latency analysis: first half avg=%v, second half avg=%v", firstHalfAvg, secondHalfAvg)
+
+	// Second half should not be significantly higher (lag buildup indicator)
+	if secondHalfAvg > firstHalfAvg*2 {
+		t.Errorf("latency increased over time (lag buildup): %v -> %v", firstHalfAvg, secondHalfAvg)
+	}
+}
+
+// --- Benchmarks ---
+
+func BenchmarkTranscoder_VP8toVP8(b *testing.B) {
+	if !IsVP8Available() {
+		b.Skip("VP8 not available")
+	}
+
+	transcoder, err := NewTranscoder(TranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		OutputCodec: VideoCodecVP8,
+		Width:       640,
+		Height:      480,
+		BitrateBps:  500_000,
+		FPS:         30,
+	})
+	if err != nil {
+		b.Fatalf("failed to create transcoder: %v", err)
+	}
+	defer transcoder.Close()
+
+	raw := createTestVideoFrame(640, 480)
+
+	// Warm up
+	for i := 0; i < 60; i++ {
+		transcoder.TranscodeRaw(raw)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		transcoder.TranscodeRaw(raw)
+	}
+}
+
+func BenchmarkMultiTranscoder_3Outputs(b *testing.B) {
+	if !IsVP8Available() {
+		b.Skip("VP8 not available")
+	}
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "high", Codec: VideoCodecVP8, Width: 640, Height: 480, BitrateBps: 1_000_000},
+			{ID: "medium", Codec: VideoCodecVP8, Width: 480, Height: 360, BitrateBps: 500_000},
+			{ID: "low", Codec: VideoCodecVP8, Width: 320, Height: 240, BitrateBps: 200_000},
+		},
+	})
+	if err != nil {
+		b.Fatalf("failed to create transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	raw := createTestVideoFrame(640, 480)
+
+	// Warm up
+	for i := 0; i < 60; i++ {
+		mt.TranscodeRaw(raw)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		mt.TranscodeRaw(raw)
+	}
+}
+
+func BenchmarkMultiTranscoder_ScalingWithOutputs(b *testing.B) {
+	if !IsVP8Available() {
+		b.Skip("VP8 not available")
+	}
+
+	for _, numOutputs := range []int{1, 2, 3, 4} {
+		b.Run("outputs_"+string(rune('0'+numOutputs)), func(b *testing.B) {
+			outputs := make([]OutputConfig, numOutputs)
+			for i := 0; i < numOutputs; i++ {
+				outputs[i] = OutputConfig{
+					ID:         "output_" + string(rune('A'+i)),
+					Codec:      VideoCodecVP8,
+					Width:      640,
+					Height:     480,
+					BitrateBps: 500_000,
+				}
+			}
+
+			mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+				InputCodec:  VideoCodecVP8,
+				InputWidth:  640,
+				InputHeight: 480,
+				InputFPS:    30,
+				Outputs:     outputs,
+			})
+			if err != nil {
+				b.Fatalf("failed to create transcoder: %v", err)
+			}
+			defer mt.Close()
+
+			raw := createTestVideoFrame(640, 480)
+
+			// Warm up
+			for i := 0; i < 60; i++ {
+				mt.TranscodeRaw(raw)
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				mt.TranscodeRaw(raw)
+			}
+		})
+	}
+}
+
+// --- Raw Frame Transcoding Tests ---
+
+// TestTranscoder_RawFrameInput verifies that raw VideoFrame can be encoded directly
+// without needing to decode first. This is the preferred API when you have raw YUV frames.
+func TestTranscoder_RawFrameInput(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	transcoder, err := NewTranscoder(TranscoderConfig{
+		OutputCodec: VideoCodecVP8,
+		Width:       640,
+		Height:      480,
+		BitrateBps:  500_000,
+		FPS:         30,
+	})
+	if err != nil {
+		t.Fatalf("failed to create transcoder: %v", err)
+	}
+	defer transcoder.Close()
+
+	// Create raw YUV frame (no decoding needed)
+	raw := createTestVideoFrame(640, 480)
+
+	// Encode directly using TranscodeRaw
+	var output *EncodedFrame
+	for i := 0; i < 60 && output == nil; i++ {
+		output, err = transcoder.TranscodeRaw(raw)
+		if err != nil {
+			t.Fatalf("TranscodeRaw failed: %v", err)
+		}
+	}
+
+	if output == nil {
+		t.Skip("encoder still buffering")
+	}
+
+	// Verify output
+	if len(output.Data) == 0 {
+		t.Error("output frame has no data")
+	}
+	t.Logf("Raw frame encoded to %d bytes", len(output.Data))
+}
+
+// TestMultiTranscoder_RawFrameInput verifies that MultiTranscoder can encode raw frames
+// to multiple outputs simultaneously.
+func TestMultiTranscoder_RawFrameInput(t *testing.T) {
+	if !IsVP8Available() || !IsVP9Available() {
+		t.Skip("VP8 or VP9 not available")
+	}
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "vp8", Codec: VideoCodecVP8, BitrateBps: 500_000},
+			{ID: "vp9", Codec: VideoCodecVP9, BitrateBps: 500_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	// Create raw YUV frame
+	raw := createTestVideoFrame(640, 480)
+
+	// Encode to multiple outputs using TranscodeRaw
+	var result *TranscodeResult
+	for i := 0; i < 60 && (result == nil || len(result.Variants) < 2); i++ {
+		result, err = mt.TranscodeRaw(raw)
+		if err != nil {
+			t.Fatalf("TranscodeRaw failed: %v", err)
+		}
+	}
+
+	if result == nil || len(result.Variants) < 2 {
+		t.Skip("encoders still buffering")
+	}
+
+	// Verify both outputs
+	for _, v := range result.Variants {
+		if v.Frame == nil || len(v.Frame.Data) == 0 {
+			t.Errorf("variant %s has no data", v.VariantID)
+		}
+		t.Logf("Raw frame encoded to %s: %d bytes", v.VariantID, len(v.Frame.Data))
+	}
+}
+
+// TestMultiTranscoder_Passthrough verifies that passthrough skips decode+encode.
+func TestMultiTranscoder_Passthrough(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "passthrough", Codec: VideoCodecVP8, Passthrough: true},
+			{ID: "transcode", Codec: VideoCodecVP8, Width: 320, Height: 240, BitrateBps: 300_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	// Create encoded input
+	input := createEncodedTestFrame(t, VideoCodecVP8, 640, 480, true)
+
+	// Transcode
+	result, err := mt.Transcode(input)
+	if err != nil {
+		t.Fatalf("transcode failed: %v", err)
+	}
+
+	// Check passthrough variant uses same data pointer (zero-copy)
+	for _, v := range result.Variants {
+		if v.VariantID == "passthrough" {
+			// Passthrough should return the same frame
+			if v.Frame != input {
+				t.Log("passthrough created a new frame (expected same pointer)")
+			}
+			if len(v.Frame.Data) == 0 {
+				t.Error("passthrough frame has no data")
+			}
+			t.Logf("Passthrough: %d bytes (zero CPU cost)", len(v.Frame.Data))
+		}
+	}
+
+	// Measure time difference
+	var passthroughTime, transcodeTime time.Duration
+	const iterations = 100
+
+	// Passthrough-only config
+	mtPassthrough, _ := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec: VideoCodecVP8,
+		Outputs:    []OutputConfig{{ID: "pt", Codec: VideoCodecVP8, Passthrough: true}},
+	})
+	defer mtPassthrough.Close()
+
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		mtPassthrough.Transcode(input)
+	}
+	passthroughTime = time.Since(start)
+
+	// Transcode-only config (need raw frame for this)
+	mtTranscode, _ := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  640,
+		InputHeight: 480,
+		Outputs:     []OutputConfig{{ID: "tc", Codec: VideoCodecVP8, BitrateBps: 500_000}},
+	})
+	defer mtTranscode.Close()
+
+	raw := createTestVideoFrame(640, 480)
+	// Warm up
+	for i := 0; i < 60; i++ {
+		mtTranscode.TranscodeRaw(raw)
+	}
+
+	start = time.Now()
+	for i := 0; i < iterations; i++ {
+		mtTranscode.TranscodeRaw(raw)
+	}
+	transcodeTime = time.Since(start)
+
+	t.Logf("Passthrough: %v for %d iterations (%.2f µs/op)", passthroughTime, iterations, float64(passthroughTime.Microseconds())/float64(iterations))
+	t.Logf("Transcode:   %v for %d iterations (%.2f µs/op)", transcodeTime, iterations, float64(transcodeTime.Microseconds())/float64(iterations))
+	t.Logf("Speedup: %.0fx", float64(transcodeTime)/float64(passthroughTime))
+}
+
+// --- Dynamic Output Addition Tests ---
+
+// TestMultiTranscoder_AddOutput verifies that outputs can be added dynamically.
+func TestMultiTranscoder_AddOutput(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	// Create with single output
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "initial", Codec: VideoCodecVP8, BitrateBps: 500_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	// Verify initial state
+	if mt.OutputCount() != 1 {
+		t.Errorf("expected 1 output, got %d", mt.OutputCount())
+	}
+
+	// Add a second output dynamically
+	err = mt.AddOutput(OutputConfig{
+		ID:         "dynamic_vp8",
+		Codec:      VideoCodecVP8,
+		Width:      320,
+		Height:     240,
+		BitrateBps: 200_000,
+	})
+	if err != nil {
+		t.Fatalf("AddOutput failed: %v", err)
+	}
+
+	if mt.OutputCount() != 2 {
+		t.Errorf("expected 2 outputs, got %d", mt.OutputCount())
+	}
+
+	// Transcode and verify both outputs produce data
+	raw := createTestVideoFrame(640, 480)
+	var result *TranscodeResult
+	for i := 0; i < 60 && (result == nil || len(result.Variants) < 2); i++ {
+		result, _ = mt.TranscodeRaw(raw)
+	}
+
+	if result == nil || len(result.Variants) < 2 {
+		t.Skip("encoders still buffering")
+	}
+
+	t.Logf("Dynamic output addition: %d variants", len(result.Variants))
+	for _, v := range result.Variants {
+		if v.Frame != nil {
+			t.Logf("  %s: %d bytes", v.VariantID, len(v.Frame.Data))
+		}
+	}
+}
+
+// TestMultiTranscoder_AddOutput_AllCodecs tests adding outputs for all supported codecs.
+func TestMultiTranscoder_AddOutput_AllCodecs(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	// Start with empty-ish transcoder (one initial output)
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "base", Codec: VideoCodecVP8, BitrateBps: 500_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	// Add VP8 output
+	err = mt.AddOutput(OutputConfig{
+		ID:         "vp8",
+		Codec:      VideoCodecVP8,
+		Width:      320,
+		Height:     240,
+		BitrateBps: 200_000,
+	})
+	if err != nil {
+		t.Fatalf("AddOutput VP8 failed: %v", err)
+	}
+	t.Log("Added VP8 output")
+
+	// Add VP9 output if available
+	if IsVP9Available() {
+		err = mt.AddOutput(OutputConfig{
+			ID:         "vp9",
+			Codec:      VideoCodecVP9,
+			Width:      640,
+			Height:     480,
+			BitrateBps: 400_000,
+		})
+		if err != nil {
+			t.Errorf("AddOutput VP9 failed: %v", err)
+		} else {
+			t.Log("Added VP9 output")
+		}
+	}
+
+	// Add H264 output if available
+	if IsH264EncoderAvailable() {
+		err = mt.AddOutput(OutputConfig{
+			ID:         "h264",
+			Codec:      VideoCodecH264,
+			Width:      640,
+			Height:     480,
+			BitrateBps: 500_000,
+		})
+		if err != nil {
+			t.Errorf("AddOutput H264 failed: %v", err)
+		} else {
+			t.Log("Added H264 output")
+		}
+	}
+
+	// Add AV1 output if available
+	if IsAV1Available() {
+		err = mt.AddOutput(OutputConfig{
+			ID:         "av1",
+			Codec:      VideoCodecAV1,
+			Width:      640,
+			Height:     480,
+			BitrateBps: 300_000,
+		})
+		if err != nil {
+			t.Errorf("AddOutput AV1 failed: %v", err)
+		} else {
+			t.Log("Added AV1 output")
+		}
+	}
+
+	t.Logf("Total outputs: %d", mt.OutputCount())
+
+	// Verify all variants are listed
+	variants := mt.Variants()
+	t.Logf("Variants: %v", variants)
+
+	// Transcode and verify outputs
+	raw := createTestVideoFrame(640, 480)
+	var result *TranscodeResult
+	for i := 0; i < 90; i++ {
+		result, _ = mt.TranscodeRaw(raw)
+	}
+
+	if result != nil {
+		t.Logf("Transcode produced %d variants", len(result.Variants))
+		for _, v := range result.Variants {
+			if v.Frame != nil {
+				t.Logf("  %s (%s): %d bytes", v.VariantID, v.Codec, len(v.Frame.Data))
+			}
+		}
+	}
+}
+
+// TestMultiTranscoder_RemoveOutput verifies that outputs can be removed dynamically.
+func TestMultiTranscoder_RemoveOutput(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "keep", Codec: VideoCodecVP8, BitrateBps: 500_000},
+			{ID: "remove", Codec: VideoCodecVP8, Width: 320, Height: 240, BitrateBps: 200_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	if mt.OutputCount() != 2 {
+		t.Errorf("expected 2 outputs, got %d", mt.OutputCount())
+	}
+
+	// Remove one output
+	err = mt.RemoveOutput("remove")
+	if err != nil {
+		t.Fatalf("RemoveOutput failed: %v", err)
+	}
+
+	if mt.OutputCount() != 1 {
+		t.Errorf("expected 1 output after removal, got %d", mt.OutputCount())
+	}
+
+	// Verify removed variant is gone
+	_, exists := mt.VariantConfig("remove")
+	if exists {
+		t.Error("removed variant still exists")
+	}
+
+	// Transcode and verify only one output
+	raw := createTestVideoFrame(640, 480)
+	var result *TranscodeResult
+	for i := 0; i < 60 && (result == nil || len(result.Variants) == 0); i++ {
+		result, _ = mt.TranscodeRaw(raw)
+	}
+
+	if result != nil {
+		if len(result.Variants) != 1 {
+			t.Errorf("expected 1 variant, got %d", len(result.Variants))
+		}
+		for _, v := range result.Variants {
+			if v.VariantID == "remove" {
+				t.Error("removed variant still producing output")
+			}
+		}
+	}
+}
+
+// TestMultiTranscoder_AddOutput_Errors tests error handling for AddOutput.
+func TestMultiTranscoder_AddOutput_Errors(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "existing", Codec: VideoCodecVP8, BitrateBps: 500_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	// Test: empty ID
+	err = mt.AddOutput(OutputConfig{Codec: VideoCodecVP8})
+	if err == nil {
+		t.Error("expected error for empty ID")
+	}
+
+	// Test: duplicate ID
+	err = mt.AddOutput(OutputConfig{ID: "existing", Codec: VideoCodecVP8})
+	if err == nil {
+		t.Error("expected error for duplicate ID")
+	}
+
+	// Test: unknown codec
+	err = mt.AddOutput(OutputConfig{ID: "new", Codec: VideoCodecUnknown})
+	if err == nil {
+		t.Error("expected error for unknown codec")
+	}
+}
+
+// TestMultiTranscoder_AddOutput_Passthrough tests adding passthrough outputs dynamically.
+func TestMultiTranscoder_AddOutput_Passthrough(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec: VideoCodecVP8,
+		Outputs: []OutputConfig{
+			{ID: "transcode", Codec: VideoCodecVP8, Width: 320, Height: 240, BitrateBps: 200_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	// Add passthrough output dynamically
+	err = mt.AddOutput(OutputConfig{
+		ID:          "passthrough",
+		Codec:       VideoCodecVP8,
+		Passthrough: true,
+	})
+	if err != nil {
+		t.Fatalf("AddOutput passthrough failed: %v", err)
+	}
+
+	if mt.OutputCount() != 2 {
+		t.Errorf("expected 2 outputs, got %d", mt.OutputCount())
+	}
+
+	// Verify passthrough config
+	cfg, exists := mt.VariantConfig("passthrough")
+	if !exists {
+		t.Fatal("passthrough variant not found")
+	}
+	if !cfg.Passthrough {
+		t.Error("passthrough flag not set")
+	}
+
+	// Transcode and verify passthrough works
+	input := createEncodedTestFrame(t, VideoCodecVP8, 640, 480, true)
+	result, err := mt.Transcode(input)
+	if err != nil {
+		t.Fatalf("transcode failed: %v", err)
+	}
+
+	// Check passthrough returns same data
+	for _, v := range result.Variants {
+		if v.VariantID == "passthrough" {
+			if len(v.Frame.Data) == 0 {
+				t.Error("passthrough frame has no data")
+			}
+			t.Logf("Passthrough variant: %d bytes", len(v.Frame.Data))
+		}
+	}
+}
+
+// TestMultiTranscoder_AddRemove_Concurrent tests thread safety of add/remove.
+func TestMultiTranscoder_AddRemove_Concurrent(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "initial", Codec: VideoCodecVP8, BitrateBps: 500_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create multi-transcoder: %v", err)
+	}
+	defer mt.Close()
+
+	raw := createTestVideoFrame(640, 480)
+
+	// Run concurrent add/remove/transcode
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			id := "dynamic_" + string(rune('A'+i%10))
+			mt.AddOutput(OutputConfig{
+				ID:         id,
+				Codec:      VideoCodecVP8,
+				Width:      320,
+				Height:     240,
+				BitrateBps: 200_000,
+			})
+			time.Sleep(5 * time.Millisecond)
+			mt.RemoveOutput(id)
+		}
+	}()
+
+	// Transcode concurrently
+	for i := 0; i < 100; i++ {
+		mt.TranscodeRaw(raw)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	<-done
+	t.Log("Concurrent add/remove test passed (no deadlock)")
+}
+
+// TestMultiTranscoder_ParallelEncodingEfficiency verifies that parallel encoding
+// provides better performance than sequential encoding would.
+func TestMultiTranscoder_ParallelEncodingEfficiency(t *testing.T) {
+	if !IsVP8Available() {
+		t.Skip("VP8 not available")
+	}
+
+	// Measure single encoder time
+	single, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "single", Codec: VideoCodecVP8, Width: 640, Height: 480, BitrateBps: 500_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create single transcoder: %v", err)
+	}
+	defer single.Close()
+
+	// Measure triple encoder time
+	triple, err := NewMultiTranscoder(MultiTranscoderConfig{
+		InputCodec:  VideoCodecVP8,
+		InputWidth:  640,
+		InputHeight: 480,
+		InputFPS:    30,
+		Outputs: []OutputConfig{
+			{ID: "a", Codec: VideoCodecVP8, Width: 640, Height: 480, BitrateBps: 500_000},
+			{ID: "b", Codec: VideoCodecVP8, Width: 640, Height: 480, BitrateBps: 500_000},
+			{ID: "c", Codec: VideoCodecVP8, Width: 640, Height: 480, BitrateBps: 500_000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create triple transcoder: %v", err)
+	}
+	defer triple.Close()
+
+	raw := createTestVideoFrame(640, 480)
+
+	// Warm up both
+	for i := 0; i < 60; i++ {
+		single.TranscodeRaw(raw)
+		triple.TranscodeRaw(raw)
+	}
+
+	// Measure single encoder
+	var singleTotal time.Duration
+	for i := 0; i < 30; i++ {
+		start := time.Now()
+		single.TranscodeRaw(raw)
+		singleTotal += time.Since(start)
+	}
+	singleAvg := singleTotal / 30
+
+	// Measure triple encoder
+	var tripleTotal time.Duration
+	for i := 0; i < 30; i++ {
+		start := time.Now()
+		triple.TranscodeRaw(raw)
+		tripleTotal += time.Since(start)
+	}
+	tripleAvg := tripleTotal / 30
+
+	t.Logf("Single encoder avg: %v", singleAvg)
+	t.Logf("Triple encoder avg: %v", tripleAvg)
+	t.Logf("Ratio (triple/single): %.2fx", float64(tripleAvg)/float64(singleAvg))
+
+	// With parallel encoding, triple should be less than 3x single
+	// (ideally close to 1x on multi-core systems)
+	maxAcceptableRatio := 2.5
+	actualRatio := float64(tripleAvg) / float64(singleAvg)
+	if actualRatio > maxAcceptableRatio {
+		t.Errorf("parallel encoding not effective: triple took %.2fx longer than single (expected <%.1fx)",
+			actualRatio, maxAcceptableRatio)
+	}
+}

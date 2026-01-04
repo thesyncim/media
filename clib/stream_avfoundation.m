@@ -152,6 +152,50 @@ void stream_av_free_string(const char* str) {
     }
 }
 
+// Helper to find device by ID or get default
+static AVCaptureDevice* findVideoDevice(const char* device_id) {
+    NSString* deviceIdStr = device_id ? [NSString stringWithUTF8String:device_id] : nil;
+    AVCaptureDevice* device = nil;
+
+    if (deviceIdStr) {
+        device = [AVCaptureDevice deviceWithUniqueID:deviceIdStr];
+    } else {
+        device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+    }
+    return device;
+}
+
+int32_t stream_av_video_device_fps_range(const char* device_id, int32_t* min_fps, int32_t* max_fps) {
+    @autoreleasepool {
+        AVCaptureDevice* device = findVideoDevice(device_id);
+        if (!device) {
+            set_error("Video device not found");
+            return STREAM_AV_ERROR_NOTFOUND;
+        }
+
+        // Get the active format's supported frame rate ranges
+        AVCaptureDeviceFormat* format = device.activeFormat;
+        if (!format || format.videoSupportedFrameRateRanges.count == 0) {
+            set_error("No supported frame rate ranges");
+            return STREAM_AV_ERROR;
+        }
+
+        // Find the overall min and max across all ranges
+        Float64 overallMin = DBL_MAX;
+        Float64 overallMax = 0;
+
+        for (AVFrameRateRange* range in format.videoSupportedFrameRateRanges) {
+            if (range.minFrameRate < overallMin) overallMin = range.minFrameRate;
+            if (range.maxFrameRate > overallMax) overallMax = range.maxFrameRate;
+        }
+
+        if (min_fps) *min_fps = (int32_t)overallMin;
+        if (max_fps) *max_fps = (int32_t)overallMax;
+
+        return STREAM_AV_OK;
+    }
+}
+
 // Permission handling
 int32_t stream_av_camera_permission_status(void) {
     @autoreleasepool {
@@ -292,15 +336,7 @@ StreamAVVideoCapture stream_av_video_capture_create(
         }
 
         // Find device
-        NSString* deviceIdStr = device_id ? [NSString stringWithUTF8String:device_id] : nil;
-        AVCaptureDevice* device = nil;
-
-        if (deviceIdStr) {
-            device = [AVCaptureDevice deviceWithUniqueID:deviceIdStr];
-        } else {
-            device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-        }
-
+        AVCaptureDevice* device = findVideoDevice(device_id);
         if (!device) {
             set_error("Video device not found");
             return 0;
@@ -338,9 +374,24 @@ StreamAVVideoCapture stream_av_video_capture_create(
         }
         [wrapper.session addInput:wrapper.input];
 
-        // Configure device for requested framerate
+        // Clamp FPS to device's supported range to avoid crashes
+        int32_t actualFps = fps > 0 ? fps : 30;
+        AVCaptureDeviceFormat* format = device.activeFormat;
+        if (format && format.videoSupportedFrameRateRanges.count > 0) {
+            Float64 maxSupported = 0;
+            for (AVFrameRateRange* range in format.videoSupportedFrameRateRanges) {
+                if (range.maxFrameRate > maxSupported) {
+                    maxSupported = range.maxFrameRate;
+                }
+            }
+            if (actualFps > (int32_t)maxSupported) {
+                actualFps = (int32_t)maxSupported;
+            }
+        }
+
+        // Configure device for (clamped) framerate
         if ([device lockForConfiguration:&error]) {
-            CMTime frameDuration = CMTimeMake(1, fps > 0 ? fps : 30);
+            CMTime frameDuration = CMTimeMake(1, actualFps);
             device.activeVideoMinFrameDuration = frameDuration;
             device.activeVideoMaxFrameDuration = frameDuration;
             [device unlockForConfiguration];

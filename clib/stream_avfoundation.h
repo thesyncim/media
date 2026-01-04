@@ -46,6 +46,10 @@ const char* stream_av_video_device_label(int32_t index);
 const char* stream_av_audio_input_device_id(int32_t index);
 const char* stream_av_audio_input_device_label(int32_t index);
 
+// Get video device frame rate range (returns min and max FPS * 100 for precision)
+// Returns 0 on success, negative on error
+int32_t stream_av_video_device_fps_range(const char* device_id, int32_t* min_fps, int32_t* max_fps);
+
 // Free string returned by above functions
 void stream_av_free_string(const char* str);
 

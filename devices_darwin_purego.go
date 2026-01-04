@@ -51,6 +51,7 @@ var (
 	streamAVVideoCaptureStop           func(handle uint64) int32
 	streamAVVideoCaptureDestroy        func(handle uint64)
 	streamAVGetError                   func() uintptr
+	streamAVVideoDeviceFPSRange        func(deviceID uintptr, minFPS, maxFPS uintptr) int32
 )
 
 func initAVFoundation() {
@@ -121,6 +122,7 @@ func initAVFoundation() {
 		purego.RegisterLibFunc(&streamAVVideoCaptureStop, avfHandle, "stream_av_video_capture_stop")
 		purego.RegisterLibFunc(&streamAVVideoCaptureDestroy, avfHandle, "stream_av_video_capture_destroy")
 		purego.RegisterLibFunc(&streamAVGetError, avfHandle, "stream_av_get_error")
+		purego.RegisterLibFunc(&streamAVVideoDeviceFPSRange, avfHandle, "stream_av_video_device_fps_range")
 
 		avfLoaded = true
 	})
@@ -232,6 +234,39 @@ func MicrophonePermissionStatus() int {
 		return AVAuthorizationStatusNotDetermined
 	}
 	return int(streamAVMicrophonePermissionStatus())
+}
+
+// GetVideoDeviceFPSRange returns the min and max FPS supported by a video device.
+// Returns (0, 0, error) if the device is not found or FPS range cannot be determined.
+func GetVideoDeviceFPSRange(deviceID string) (minFPS, maxFPS int, err error) {
+	initAVFoundation()
+	if !avfLoaded {
+		return 0, 0, fmt.Errorf("AVFoundation not available: %v", avfInitErr)
+	}
+
+	var deviceIDPtr uintptr
+	if deviceID != "" {
+		deviceIDBytes := append([]byte(deviceID), 0)
+		deviceIDPtr = uintptr(unsafe.Pointer(&deviceIDBytes[0]))
+	}
+
+	var minVal, maxVal int32
+	result := streamAVVideoDeviceFPSRange(
+		deviceIDPtr,
+		uintptr(unsafe.Pointer(&minVal)),
+		uintptr(unsafe.Pointer(&maxVal)),
+	)
+
+	if result != 0 {
+		errPtr := streamAVGetError()
+		errMsg := "unknown error"
+		if errPtr != 0 {
+			errMsg = goStringFromPtr(errPtr)
+		}
+		return 0, 0, fmt.Errorf("failed to get FPS range: %s", errMsg)
+	}
+
+	return int(minVal), int(maxVal), nil
 }
 
 // RequestCameraPermission requests camera permission (async).

@@ -1,4 +1,4 @@
-# Stream Media SDK
+# Media SDK
 
 Media processing library for Go with WebRTC-style APIs. Works with [pion/webrtc](https://github.com/pion/webrtc).
 
@@ -141,7 +141,7 @@ source := media.NewTestPatternSource(media.TestPatternConfig{
     FPS:     30,
     Pattern: media.PatternColorBars,
 })
-source.Start()
+source.Start(ctx)
 defer source.Stop()
 
 frame, _ := source.ReadFrame(ctx)
@@ -153,6 +153,100 @@ audioSource := media.NewAudioTestPatternSource(media.AudioTestPatternConfig{
     Pattern:    media.AudioPatternSineWave,
     Frequency:  440,
 })
+```
+
+## Transcoding Examples (MultiTranscoder)
+
+MultiTranscoder decodes once and fans out many outputs in parallel. This is the
+same engine used by `examples/webrtc-transcoder`.
+
+### 1) One incoming stream -> passthrough + simulcast + multi-codec
+
+```go
+// Passthrough source + VP8 simulcast + VP9/AV1 variants at 720p
+outputs := []media.OutputConfig{
+    {ID: "source", Codec: media.VideoCodecVP8, Passthrough: true},
+}
+outputs = append(outputs, media.SimulcastPreset(media.VideoCodecVP8, 2_500_000)...)
+outputs = append(outputs, media.MultiCodecPreset(
+    1280, 720, 1_200_000,
+    media.VideoCodecVP9, media.VideoCodecAV1,
+)...)
+
+mt, _ := media.NewMultiTranscoder(media.MultiTranscoderConfig{
+    InputCodec:  media.VideoCodecVP8,
+    InputWidth:  1920,
+    InputHeight: 1080,
+    Outputs:     outputs,
+    OnKeyframeNeeded: func() error {
+        return sendPLI() // request keyframe from source
+    },
+})
+depacketizer, _ := media.CreateVideoDepacketizer(media.VideoCodecVP8)
+
+packetizers := map[string]media.RTPPacketizer{}
+for _, id := range mt.Variants() {
+    cfg, _ := mt.VariantConfig(id)
+    pkt, _ := media.CreateVideoPacketizer(
+        cfg.Codec,
+        ssrcFor(id),
+        cfg.Codec.DefaultPayloadType(),
+        1200,
+    )
+    packetizers[id] = pkt
+}
+
+for {
+    pkt := readRTPPacket()
+    encoded, _ := depacketizer.Depacketize(pkt)
+    if encoded == nil {
+        continue
+    }
+
+    result, _ := mt.Transcode(encoded)
+    for _, v := range result.Variants {
+        packets, _ := packetizers[v.VariantID].Packetize(v.Frame)
+        fanoutToSubscribers(v.VariantID, packets)
+    }
+}
+```
+
+### 2) Raw frames -> multi-output encodes (no decode)
+
+```go
+mt, _ := media.NewMultiTranscoder(media.MultiTranscoderConfig{
+    Outputs: []media.OutputConfig{
+        {ID: "vp9-svc", Codec: media.VideoCodecVP9, Width: 1280, Height: 720, BitrateBps: 1_200_000, TemporalLayers: 3},
+        {ID: "h264-720p", Codec: media.VideoCodecH264, Width: 1280, Height: 720, BitrateBps: 1_500_000},
+        {ID: "av1-360p", Codec: media.VideoCodecAV1, Width: 640, Height: 360, BitrateBps: 500_000},
+    },
+})
+
+source := media.NewTestPatternSource(media.TestPatternConfig{
+    Width: 1920, Height: 1080, FPS: 30, Pattern: media.PatternColorBars,
+})
+source.Start(ctx)
+defer source.Stop()
+
+for {
+    frame, _ := source.ReadFrame(ctx) // *media.VideoFrame
+    result, _ := mt.TranscodeRaw(frame)
+    for _, v := range result.Variants {
+        useEncoded(v.VariantID, v.Frame)
+    }
+}
+```
+
+### 3) Per-viewer ABR picker
+
+```go
+abr := media.NewABRController(mt, []string{"high", "medium", "low"})
+
+result, _ := mt.Transcode(encoded)
+picked := abr.SelectOutput(result)
+if picked != nil {
+    deliver(picked.VariantID, picked.Frame)
+}
 ```
 
 ## Building Native Libraries

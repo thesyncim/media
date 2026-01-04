@@ -4,20 +4,20 @@ Media processing library for Go with WebRTC-style APIs. Works with [pion/webrtc]
 
 ## Features
 
-- **Encoding & Decoding** - VP8/VP9 video, Opus audio
-- **RTP Packetization** - packetizers and depacketizers using pion/rtp
-- **Device Capture** - camera/microphone on macOS (AVFoundation) and Linux (V4L2/ALSA)
+- **Encoding & Decoding** - VP8/VP9, H.264, AV1 video; Opus audio
+- **RTP Packetization** - packetizers/depacketizers for VP8/VP9/H.264/AV1/Opus using pion/rtp
+- **Media Devices** - getUserMedia-style APIs; macOS video capture via AVFoundation (audio/display capture WIP); Linux device enumeration via V4L2/ALSA
 - **pion Compatible** - `LocalTrack` implements `webrtc.TrackLocal`
-- **No CGO** - uses [purego](https://github.com/ebitengine/purego) for native library calls
-- **Test Sources** - video patterns (color bars, gradients) and audio patterns (sine, noise)
+- **Purego by default** - no CGO required; optional CGO build for lower overhead
+- **Sources & Utilities** - test patterns, camera source, compositor, scaler, codec detection helpers
 
 ## Install
 
 ```bash
-go get github.com/GetStream/media
+go get github.com/thesyncim/media
 ```
 
-You'll also need to build the native libraries (see below).
+Requires Go 1.23+ and the native libraries (see below).
 
 ## Quick Start
 
@@ -34,7 +34,13 @@ encoder, _ := media.NewVP8Encoder(media.VideoEncoderConfig{
 defer encoder.Close()
 
 // Create RTP packetizer
-packetizer, _ := media.CreateVideoPacketizer(media.VideoCodecVP8, ssrc, 96, 1200)
+ssrc := uint32(1234)
+packetizer, _ := media.CreateVideoPacketizer(
+    media.VideoCodecVP8,
+    ssrc,
+    media.VideoCodecVP8.DefaultPayloadType(),
+    1200,
+)
 
 // Encode and packetize
 frame := getVideoFrame() // I420 format
@@ -79,7 +85,12 @@ pc.AddTrack(track)
 
 // Write encoded frames
 encoder, _ := media.NewVP8Encoder(config)
-packetizer, _ := media.CreateVideoPacketizer(media.VideoCodecVP8, ssrc, 96, 1200)
+packetizer, _ := media.CreateVideoPacketizer(
+    media.VideoCodecVP8,
+    ssrc,
+    media.VideoCodecVP8.DefaultPayloadType(),
+    1200,
+)
 
 for frame := range frames {
     encoded, _ := encoder.Encode(frame)
@@ -92,8 +103,12 @@ for frame := range frames {
 
 ### Capture from camera
 
+Note: macOS video capture is implemented. Audio and display capture are not yet implemented,
+and Linux capture is currently enumeration-only.
+
 ```go
-provider := media.NewAVFoundationProvider() // or NewLinuxDeviceProvider()
+provider := media.NewAVFoundationProvider() // macOS only
+// provider := media.NewLinuxDeviceProvider() // enumeration only (capture WIP)
 
 // List devices
 devices, _ := provider.ListVideoDevices(ctx)
@@ -142,35 +157,55 @@ audioSource := media.NewAudioTestPatternSource(media.AudioTestPatternConfig{
 
 ## Building Native Libraries
 
-The package requires native libraries for codecs. Build them from source:
+The package requires native libraries for codecs and device capture.
 
 ```bash
-cd clib
-make all    # Downloads libvpx 1.15.0, libopus 1.5.2 and builds wrappers
+make build         # builds libstream_* into ./build
+# or
+make build-system  # uses system libraries (faster for development)
 ```
 
-Libraries are built to `build/`:
+When running purego builds, point the loader at your build directory:
+
+```bash
+export STREAM_SDK_LIB_PATH=$PWD/build
+```
+
+Libraries built to `build/`:
 - `libstream_vpx.{dylib,so}` - VP8/VP9
 - `libstream_opus.{dylib,so}` - Opus
+- `libstream_h264.{dylib,so}` - H.264 (x264 encoder; OpenH264 decoder loaded at runtime)
+- `libstream_av1.{dylib,so}` - AV1
+- `libstream_compositor.{dylib,so}` - video compositor
 - `libstream_avfoundation.dylib` - macOS capture
-- `libstream_v4l2.so`, `libstream_alsa.so` - Linux capture
+- `libstream_v4l2.so`, `libstream_alsa.so` - Linux device libraries (capture WIP in Go)
 
 ### macOS with Homebrew (faster)
 
 ```bash
-brew install libvpx opus
-cd clib
-make USE_SYSTEM_LIBS=1 all
+brew install libvpx opus x264 aom openh264
+make build-system
 ```
+
+OpenH264 is required at runtime for H.264 decode.
+
+### Build tags
+
+- `novpx`, `noopus`, `noh264`, `noav1` - disable specific codecs
+- `nodevices` - disable device capture support
+- `CGO_ENABLED=0` uses purego; `CGO_ENABLED=1` enables CGO variants
 
 ### Run tests
 
 ```bash
-# After building libs
-go test ./...
+make test
+make test-cgo
+```
 
-# Or use the test script
-./test.sh all
+Or manually:
+
+```bash
+STREAM_SDK_LIB_PATH=$PWD/build CGO_ENABLED=0 go test ./...
 ```
 
 ## Codec Support
@@ -179,34 +214,45 @@ go test ./...
 |-------|--------|--------|-----|
 | VP8   | ✓      | ✓      | ✓   |
 | VP9   | ✓      | ✓      | ✓   |
+| H.264 | ✓      | ✓*     | ✓   |
+| AV1   | ✓      | ✓      | ✓   |
 | Opus  | ✓      | ✓      | ✓   |
+
+*H.264 decode requires OpenH264 at runtime.
+H.265 is defined in `VideoCodec` but not implemented yet.
 
 ## Platform Support
 
-| Platform | Video Capture | Audio Capture |
-|----------|--------------|---------------|
-| macOS arm64/amd64 | AVFoundation | AVFoundation |
-| Linux amd64/arm64 | V4L2 | ALSA |
+| Platform | Video Capture | Audio Capture | Display Capture |
+|----------|---------------|---------------|-----------------|
+| macOS arm64/amd64 | AVFoundation (video only) | Not yet implemented | Not yet implemented |
+| Linux amd64/arm64 | Not yet implemented (enumeration only) | Not yet implemented (enumeration only) | Not yet implemented |
 
 ## Architecture
 
 ```
-Encode path:
-  VideoSource → VideoEncoder → RTPPacketizer → network
+Encode path (video):
+  VideoSource/VideoTrack → VideoEncoder → RTPPacketizer → RTPWriter → network
+
+Encode path (audio):
+  AudioSource/AudioTrack → AudioEncoder → RTPPacketizer → RTPWriter → network
 
 Decode path:
-  network → RTPDepacketizer → VideoDecoder → VideoFrame
+  network → RTPReader → RTPDepacketizer → Decoder → Frame/Samples callback
 ```
 
 ## Dependencies
 
-- [pion/webrtc](https://github.com/pion/webrtc) - WebRTC types
+- [pion/webrtc/v4](https://github.com/pion/webrtc) - WebRTC types
 - [pion/rtp](https://github.com/pion/rtp) - RTP packet handling
 - [ebitengine/purego](https://github.com/ebitengine/purego) - Pure Go FFI
 
 Native:
-- libvpx ≥1.11.0
-- libopus ≥1.3.0
+- libvpx
+- libopus
+- x264
+- libaom
+- OpenH264 (H.264 decode)
 
 ## License
 

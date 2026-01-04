@@ -1,79 +1,38 @@
-// Package media provides a WebRTC-like media abstraction layer for the FFI.
+// Package media provides WebRTC-style media primitives in Go, backed by
+// native codec/device wrappers (libstream_*).
 //
-// This package provides high-level abstractions similar to the browser WebRTC API:
-//
-//   - MediaStreamTrack: Individual audio or video track
-//   - MediaStream: Collection of tracks
-//   - MediaDevices: Device enumeration and media capture (getUserMedia, getDisplayMedia)
-//   - VideoEncoder/VideoDecoder: Codec encode/decode
-//   - AudioEncoder/AudioDecoder: Audio codec encode/decode
-//   - RTPPacketizer/RTPDepacketizer: RTP packetization
-//   - Pipeline: Connects sources, encoders, and RTP transport
+// Key pieces include:
+//   - MediaStream/MediaStreamTrack and MediaDevices (getUserMedia-style APIs)
+//   - Video/Audio encoders and decoders
+//   - RTP packetizers/depacketizers and RTPReader/RTPWriter helpers
+//   - Pipelines for RTP encode/decode
+//   - Test pattern sources, compositor, and scaler utilities
 //
 // # Architecture
 //
-// The media pipeline follows this flow:
+//   Encode (video): VideoSource/VideoTrack -> VideoEncoder -> RTPPacketizer -> RTPWriter
+//   Encode (audio): AudioSource/AudioTrack -> AudioEncoder -> RTPPacketizer -> RTPWriter
+//   Decode: RTPReader -> RTPDepacketizer -> Decoder -> Frame/Samples callback
 //
-//	Encode Path (publishing):
-//	  MediaSource/Track -> VideoEncoder -> RTPPacketizer -> RTPWriter -> Network
+// # Native Libraries
 //
-//	Decode Path (subscribing):
-//	  Network -> RTPReader -> RTPDepacketizer -> VideoDecoder -> VideoFrame -> App
+// Bindings load libstream_* libraries built from clib/ into build/.
+// Set STREAM_SDK_LIB_PATH to the directory containing these libraries.
+// By default the package uses purego (CGO_ENABLED=0). With CGO enabled it
+// links against the same wrappers for lower overhead.
 //
-// # Usage from Go
+// Device capture support is platform-specific; audio/display capture is not
+// implemented in the current providers.
 //
-// The package is designed to be used directly from Go applications:
+// # Build Tags
 //
-//	// Get camera stream
-//	devices := media.GetMediaDevices()
-//	stream, _ := devices.GetUserMedia(ctx, media.UserMediaOptions{
-//	    Video: &media.VideoConstraints{Width: 1280, Height: 720},
-//	    Audio: &media.AudioConstraints{},
-//	})
-//
-//	// Create encoder
-//	encoder, _ := media.CreateVideoEncoder(media.VideoEncoderConfig{
-//	    Codec:  media.VideoCodecVP8,
-//	    Width:  1280,
-//	    Height: 720,
-//	    FPS:    30,
-//	    BitrateBps: 1500000,
-//	})
-//
-//	// Create packetizer
-//	packetizer, _ := media.CreateVideoPacketizer(media.VideoCodecVP8, ssrc, 96, 1200)
-//
-//	// Create pipeline
-//	pipeline, _ := media.NewVideoEncodePipeline(media.VideoPipelineConfig{
-//	    Track:      stream.GetVideoTracks()[0],
-//	    Encoder:    encoder,
-//	    Packetizer: packetizer,
-//	    Writer:     rtpWriter,
-//	})
-//	pipeline.Start()
-//
-// # Plugin/Module System
-//
-// Codecs and sources are registered at init time. Use build tags to include/exclude:
-//
-//	// With all codecs
-//	go build -tags "with_vpx with_opus with_x264 with_aom"
-//
-//	// Minimal build (test pattern + FFmpeg fallback)
-//	go build
+// Optional tags disable features:
+//   - novpx, noopus, noh264, noav1: disable specific codecs
+//   - nodevices: disable device capture support
 //
 // # Supported Codecs
 //
-// Video:
-//   - VP8/VP9 (libvpx)
-//   - H.264 (x264 or FFmpeg)
-//   - AV1 (libaom or FFmpeg)
-//
-// Audio:
-//   - Opus (libopus)
-//
-// # Thread Safety
-//
-// All types in this package are thread-safe unless otherwise noted.
-// Callbacks may be invoked from any goroutine.
+// Video: VP8/VP9 (libvpx), H.264 (x264 encoder + OpenH264 decoder), AV1 (libaom)
+// Audio: Opus (libopus)
+// Availability depends on which native libraries are present at runtime.
 package media

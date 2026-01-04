@@ -1,4 +1,4 @@
-# Stream Media SDK
+# Media SDK
 
 Media processing library for Go with WebRTC-style APIs. Works with [pion/webrtc](https://github.com/pion/webrtc).
 

@@ -2,7 +2,7 @@ package media
 
 import "sync"
 
-// VideoFrameBuffer is a pre-allocated buffer for zero-copy frame delivery.
+// VideoFrameBuffer is a pre-allocated buffer for zero-allocation frame delivery.
 type VideoFrameBuffer struct {
 	// Pre-allocated plane buffers
 	Y []byte // Y plane buffer
@@ -91,7 +91,7 @@ func (b *VideoFrameBuffer) ToVideoFrame() VideoFrame {
 	return frame
 }
 
-// AudioSampleBuffer is a pre-allocated buffer for zero-copy audio delivery.
+// AudioSampleBuffer is a pre-allocated buffer for zero-allocation audio delivery.
 type AudioSampleBuffer struct {
 	// Pre-allocated sample buffer
 	Data []byte

@@ -18,8 +18,7 @@
 //
 // Bindings load libmedia_* libraries built from clib/ into build/.
 // Set MEDIA_SDK_LIB_PATH to the directory containing these libraries.
-// By default the package uses purego (CGO_ENABLED=0). With CGO enabled it
-// links against the same wrappers for lower overhead.
+// The package uses purego for FFI and does not require CGO.
 //
 // Device capture support is platform-specific; audio/display capture is not
 // implemented in the current providers.

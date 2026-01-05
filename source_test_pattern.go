@@ -46,7 +46,7 @@ type TestPatternConfig struct {
 	Height   int         // Frame height (default: 720)
 	FPS      int         // Frames per second (default: 30)
 	Pattern  PatternType // Pattern type (default: ColorBars)
-	Animated bool        // Enable animation (default: true for MovingBox)
+	Animated bool        // Enable animation for static patterns (MovingBox/Noise always animate)
 
 	// For SolidColor pattern
 	SolidR, SolidG, SolidB uint8

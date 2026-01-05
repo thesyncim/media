@@ -1,4 +1,4 @@
-// Package media provides media source and codec abstractions for the FFI layer.
+// Core frame and sample types used across the media package.
 package media
 
 // PixelFormat represents video pixel formats.

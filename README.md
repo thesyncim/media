@@ -8,7 +8,7 @@ Media processing library for Go with WebRTC-style APIs. Works with [pion/webrtc]
 - **RTP Packetization** - packetizers/depacketizers for VP8/VP9/H.264/AV1/Opus using pion/rtp
 - **Media Devices** - getUserMedia-style APIs; macOS video capture via AVFoundation (audio/display capture WIP); Linux device enumeration via V4L2/ALSA
 - **pion Compatible** - `LocalTrack` implements `webrtc.TrackLocal`
-- **Purego only** - no CGO required; pure Go FFI via ebitengine/purego
+- **Purego-based FFI** - no CGO required; native libs loaded at runtime via ebitengine/purego
 - **Provider system** - explicit codec provider selection (x264, OpenH264, libvpx, libaom, etc.)
 - **Sources & Utilities** - test patterns, camera source, compositor, scaler, codec detection helpers
 
@@ -18,7 +18,7 @@ Media processing library for Go with WebRTC-style APIs. Works with [pion/webrtc]
 go get github.com/thesyncim/media
 ```
 
-Requires Go 1.23+ and the native libraries (see below).
+Requires Go 1.24+ and the native libraries (see below).
 
 ## Quick Start
 
@@ -260,11 +260,21 @@ make build         # builds libmedia_* into ./build
 make build-system  # uses system libraries (faster for development)
 ```
 
-When running purego builds, point the loader at your build directory:
+When running with locally-built libs, point the loader at your build directory:
 
 ```bash
 export MEDIA_SDK_LIB_PATH=$PWD/build
 ```
+
+Per-library overrides (optional):
+- `MEDIA_VPX_LIB_PATH`
+- `MEDIA_H264_LIB_PATH`
+- `MEDIA_AV1_LIB_PATH`
+- `MEDIA_OPUS_LIB_PATH`
+- `MEDIA_COMPOSITOR_LIB_PATH`
+- `MEDIA_AV_LIB_PATH` (macOS capture)
+
+Loader search order: per-library override -> `MEDIA_SDK_LIB_PATH` -> common dev/system paths.
 
 Libraries built to `build/`:
 - `libmedia_vpx.{dylib,so}` - VP8/VP9
@@ -303,6 +313,10 @@ Or manually:
 ```bash
 MEDIA_SDK_LIB_PATH=$PWD/build CGO_ENABLED=0 go test ./...
 ```
+
+## Examples
+
+Runnable demos live in `examples/` (e.g., `webrtc-pattern`, `webrtc-transcoder`, `rtmp-webrtc`).
 
 ## Codec Providers
 

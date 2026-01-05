@@ -82,6 +82,7 @@ func (p *VP8Packetizer) PayloadType() uint8      { p.mu.Lock(); defer p.mu.Unloc
 func (p *VP8Packetizer) SetPayloadType(pt uint8) { p.mu.Lock(); p.payloadType = pt; p.mu.Unlock() }
 func (p *VP8Packetizer) MTU() int                { p.mu.Lock(); defer p.mu.Unlock(); return p.mtu }
 func (p *VP8Packetizer) SetMTU(mtu int)          { p.mu.Lock(); p.mtu = mtu; p.mu.Unlock() }
+func (p *VP8Packetizer) Codec() VideoCodec       { return VideoCodecVP8 }
 
 // VP8Depacketizer implements RTPDepacketizer for VP8 using pion's codecs.
 type VP8Depacketizer struct {
@@ -110,7 +111,7 @@ func (d *VP8Depacketizer) Depacketize(packet *RTPPacket) (*EncodedFrame, error) 
 
 	// Discard late-arriving packets for already completed frames
 	// Use RTP timestamp comparison that handles wraparound
-	if d.hasCompletedFrame && isTimestampOlder(packet.Header.Timestamp, d.lastCompletedTs) {
+	if d.hasCompletedFrame && IsRTPTimestampOlder(packet.Header.Timestamp, d.lastCompletedTs) {
 		// This packet belongs to a frame we've already completed - discard it
 		return nil, nil
 	}
@@ -151,18 +152,6 @@ func (d *VP8Depacketizer) Depacketize(packet *RTPPacket) (*EncodedFrame, error) 
 	return nil, nil
 }
 
-// isTimestampOlder returns true if ts1 is older than ts2, handling 32-bit wraparound.
-// Uses the RTP timestamp comparison method: if the difference is > 2^31, it wrapped.
-func isTimestampOlder(ts1, ts2 uint32) bool {
-	// If ts1 == ts2, consider it "older" (already processed)
-	if ts1 == ts2 {
-		return true
-	}
-	// Standard RTP timestamp comparison with wraparound handling
-	// ts1 is older if (ts2 - ts1) < 2^31
-	diff := ts2 - ts1
-	return diff < 0x80000000
-}
 
 // DepacketizeBytes processes raw RTP packet bytes.
 func (d *VP8Depacketizer) DepacketizeBytes(data []byte) (*EncodedFrame, error) {
@@ -183,6 +172,9 @@ func (d *VP8Depacketizer) Reset() {
 	d.hasCompletedFrame = false
 	d.mu.Unlock()
 }
+
+// Codec returns the codec type.
+func (d *VP8Depacketizer) Codec() VideoCodec { return VideoCodecVP8 }
 
 func init() {
 	RegisterVideoPacketizer(VideoCodecVP8, func(ssrc uint32, pt uint8, mtu int) (RTPPacketizer, error) {

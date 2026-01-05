@@ -539,6 +539,7 @@ func TestTranscodingMode(t *testing.T) {
 		t.Fatalf("failed to create H.264 encoder: %v", err)
 	}
 	defer h264Enc.Close()
+	encodeBuf := make([]byte, h264Enc.MaxEncodedSize())
 
 	// Create transcoder H.264 -> VP8
 	transcoder, err := media.NewTranscoder(media.TranscoderConfig{
@@ -563,9 +564,13 @@ func TestTranscodingMode(t *testing.T) {
 		}
 
 		// Encode to H.264
-		h264Frame, err := h264Enc.Encode(frame)
-		if err != nil || h264Frame == nil {
+		result, err := h264Enc.Encode(frame, encodeBuf)
+		if err != nil || result.N == 0 {
 			continue
+		}
+		h264Frame := &media.EncodedFrame{
+			Data:      encodeBuf[:result.N],
+			FrameType: result.FrameType,
 		}
 
 		// Transcode to VP8

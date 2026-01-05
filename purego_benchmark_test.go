@@ -104,10 +104,11 @@ func BenchmarkVPXPurego(b *testing.B) {
 			},
 			Stride: []int{640, 320, 320},
 		}
+		encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, err := enc.Encode(frame)
+			_, err := enc.Encode(frame, encodeBuf)
 			if err != nil {
 				b.Fatal(err)
 			}

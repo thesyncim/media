@@ -244,7 +244,7 @@ func handlePublish(w http.ResponseWriter, r *http.Request) {
 						p := currentPipeline
 						publisherMu.RUnlock()
 						if p != nil && p.transcoder != nil {
-							p.transcoder.RequestKeyframeAll()
+							p.transcoder.RequestEncoderKeyframeAll()
 							log.Printf("Publisher: PLI received, requesting keyframes")
 						}
 					}
@@ -572,7 +572,7 @@ func runPeriodicKeyframes(p *TranscodePipeline) {
 			publisherMu.RUnlock()
 			for _, v := range variants {
 				if p.transcoder != nil {
-					p.transcoder.RequestKeyframe(v.ID)
+					p.transcoder.RequestEncoderKeyframe(v.ID)
 				}
 			}
 		}
@@ -779,9 +779,9 @@ func handleSubscribe(w http.ResponseWriter, r *http.Request) {
 				publisherMu.RUnlock()
 				if p != nil && p.transcoder != nil {
 					if variantID == "source" {
-						p.transcoder.RequestKeyframeAll()
+						p.transcoder.RequestEncoderKeyframeAll()
 					} else {
-						p.transcoder.RequestKeyframe(variantID)
+						p.transcoder.RequestEncoderKeyframe(variantID)
 					}
 				}
 			}
@@ -851,9 +851,9 @@ func handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			publisherMu.RUnlock()
 			if p != nil && p.transcoder != nil {
 				if variantID == "source" {
-					p.transcoder.RequestKeyframeAll()
+					p.transcoder.RequestEncoderKeyframeAll()
 				} else {
-					p.transcoder.RequestKeyframe(variantID)
+					p.transcoder.RequestEncoderKeyframe(variantID)
 				}
 				log.Printf("Subscriber [%s]: requested keyframe", variantID)
 			}

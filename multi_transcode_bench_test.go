@@ -53,6 +53,7 @@ func BenchmarkMultiTranscode4Codecs720p(b *testing.B) {
 		b.Fatalf("Failed to create source encoder: %v", err)
 	}
 	defer srcEncoder.Close()
+	srcEncodeBuf := make([]byte, srcEncoder.MaxEncodedSize())
 
 	// Create multi-transcoder
 	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
@@ -67,17 +68,29 @@ func BenchmarkMultiTranscode4Codecs720p(b *testing.B) {
 	// Generate test frames
 	rawFrame := generateTestFrame(1280, 720)
 
+	// Helper to encode a frame
+	encodeFrame := func() *EncodedFrame {
+		result, err := srcEncoder.Encode(rawFrame, srcEncodeBuf)
+		if err != nil || result.N == 0 {
+			return nil
+		}
+		return &EncodedFrame{
+			Data:      srcEncodeBuf[:result.N],
+			FrameType: result.FrameType,
+		}
+	}
+
 	// Encode first frame as keyframe
 	srcEncoder.RequestKeyframe()
-	srcEncoded, err := srcEncoder.Encode(rawFrame)
-	if err != nil {
-		b.Fatalf("Failed to encode source: %v", err)
+	srcEncoded := encodeFrame()
+	if srcEncoded == nil {
+		b.Fatalf("Failed to encode source")
 	}
 
 	// Warm up transcoder
 	for i := 0; i < 10; i++ {
 		mt.Transcode(srcEncoded)
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame()
 	}
 
 	b.ResetTimer()
@@ -89,7 +102,7 @@ func BenchmarkMultiTranscode4Codecs720p(b *testing.B) {
 			b.Fatalf("Transcode failed: %v", err)
 		}
 		// Re-encode for next iteration
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame()
 	}
 }
 
@@ -140,6 +153,7 @@ func TestMultiTranscode4Codecs720pTiming(t *testing.T) {
 		t.Fatalf("Failed to create source encoder: %v", err)
 	}
 	defer srcEncoder.Close()
+	srcEncodeBuf := make([]byte, srcEncoder.MaxEncodedSize())
 
 	// Create multi-transcoder
 	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
@@ -154,17 +168,29 @@ func TestMultiTranscode4Codecs720pTiming(t *testing.T) {
 	// Generate test frame
 	rawFrame := generateTestFrame(1280, 720)
 
+	// Helper to encode a frame
+	encodeFrame := func() *EncodedFrame {
+		result, err := srcEncoder.Encode(rawFrame, srcEncodeBuf)
+		if err != nil || result.N == 0 {
+			return nil
+		}
+		return &EncodedFrame{
+			Data:      srcEncodeBuf[:result.N],
+			FrameType: result.FrameType,
+		}
+	}
+
 	// Encode first frame as keyframe
 	srcEncoder.RequestKeyframe()
-	srcEncoded, err := srcEncoder.Encode(rawFrame)
-	if err != nil {
-		t.Fatalf("Failed to encode source: %v", err)
+	srcEncoded := encodeFrame()
+	if srcEncoded == nil {
+		t.Fatalf("Failed to encode source")
 	}
 
 	// Warm up
 	for i := 0; i < 5; i++ {
 		mt.Transcode(srcEncoded)
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame()
 	}
 
 	// Measure 100 frames
@@ -185,7 +211,7 @@ func TestMultiTranscode4Codecs720pTiming(t *testing.T) {
 		}
 
 		// Re-encode for next frame
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame()
 	}
 
 	// Calculate statistics

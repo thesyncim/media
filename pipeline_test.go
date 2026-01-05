@@ -304,9 +304,8 @@ func (s *mockSource) Config() SourceConfig              { return SourceConfig{} 
 
 type mockEncoder struct{}
 
-func (e *mockEncoder) Encode(frame *VideoFrame) (*EncodedFrame, error)                { return nil, nil }
-func (e *mockEncoder) EncodeInto(frame *VideoFrame, buf []byte) (EncodeResult, error) { return EncodeResult{}, nil }
-func (e *mockEncoder) MaxEncodedSize() int                                            { return 0 }
+func (e *mockEncoder) Encode(frame *VideoFrame, buf []byte) (EncodeResult, error) { return EncodeResult{}, nil }
+func (e *mockEncoder) MaxEncodedSize() int                                        { return 1024 }
 func (e *mockEncoder) RequestKeyframe()                                {}
 func (e *mockEncoder) SetBitrate(bps int) error                        { return nil }
 func (e *mockEncoder) SetResolution(width, height int) error           { return ErrNotSupported }

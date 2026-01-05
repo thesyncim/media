@@ -1,25 +1,11 @@
 package media
 
 import (
-	"encoding/binary"
-	"encoding/hex"
-	"log"
-	"os"
 	"sync"
 
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 )
-
-// av1DebugLog controls debug logging for AV1 depacketization
-var av1DebugLog = false
-var av1DebugCount = 0
-
-// AV1CaptureFile is the file path to capture raw RTP packets for debugging.
-// Set this before receiving packets to enable capture mode.
-var AV1CaptureFile = ""
-var av1CapturedPackets [][]byte
-var av1CaptureLimit = 50 // Capture first N packets
 
 // AV1Packetizer implements RTPPacketizer for AV1.
 // Uses pion's AV1Payloader which correctly implements RFC 9000.
@@ -137,17 +123,8 @@ func (d *AV1Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	}
 
 	// Discard late-arriving packets for already completed frames
-	if d.hasCompletedFrame && isTimestampOlderAV1(pkt.Header.Timestamp, d.lastCompletedTs) {
+	if d.hasCompletedFrame && IsRTPTimestampOlder(pkt.Header.Timestamp, d.lastCompletedTs) {
 		return nil, nil
-	}
-
-	// Capture raw packets for offline debugging
-	if AV1CaptureFile != "" && len(av1CapturedPackets) < av1CaptureLimit {
-		rawPkt, _ := pkt.Marshal()
-		av1CapturedPackets = append(av1CapturedPackets, rawPkt)
-		if len(av1CapturedPackets) == av1CaptureLimit {
-			AV1SaveCapturedPackets()
-		}
 	}
 
 	// Handle timestamp changes (new frame started)
@@ -156,28 +133,9 @@ func (d *AV1Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	}
 	d.timestamp = pkt.Header.Timestamp
 
-	// Debug: Log raw RTP payload for first few packets
-	if av1DebugLog && av1DebugCount < 10 {
-		aggHeader := pkt.Payload[0]
-		z := (aggHeader >> 7) & 1
-		y := (aggHeader >> 6) & 1
-		w := (aggHeader >> 4) & 3
-		n := (aggHeader >> 3) & 1
-		maxBytes := 100
-		if len(pkt.Payload) < maxBytes {
-			maxBytes = len(pkt.Payload)
-		}
-		log.Printf("AV1 RTP: seq=%d ts=%d marker=%v len=%d Z=%d Y=%d W=%d N=%d payload=%s",
-			pkt.Header.SequenceNumber, pkt.Header.Timestamp, pkt.Header.Marker,
-			len(pkt.Payload), z, y, w, n, hex.EncodeToString(pkt.Payload[:maxBytes]))
-	}
-
 	// Use pion's AV1Packet to properly parse RFC 9000 format
 	obus, err := d.av1Packet.Unmarshal(pkt.Payload)
 	if err != nil {
-		if av1DebugLog && av1DebugCount < 10 {
-			log.Printf("AV1 Unmarshal error: %v", err)
-		}
 		return nil, nil // Drop corrupt packets
 	}
 
@@ -201,20 +159,7 @@ func (d *AV1Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	}
 
 	if pkt.Header.Marker {
-		// Frame complete - process accumulated OBUs
-		av1DebugCount++
-		if av1DebugCount <= 3 {
-			maxBytes := 64
-			if len(d.obuBuffer) < maxBytes {
-				maxBytes = len(d.obuBuffer)
-			}
-			log.Printf("AV1 Depacketizer: frame %d, %d bytes, keyframe=%v, first bytes: %s",
-				av1DebugCount, len(d.obuBuffer), d.frameType == FrameTypeKey,
-				hex.EncodeToString(d.obuBuffer[:maxBytes]))
-			av1LogOBUStructure(d.obuBuffer)
-		}
-
-		// Cache sequence header from keyframes
+		// Frame complete - cache sequence header from keyframes
 		if d.frameType == FrameTypeKey {
 			seqHdr := av1ExtractSequenceHeader(d.obuBuffer)
 			if seqHdr != nil {
@@ -224,12 +169,6 @@ func (d *AV1Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 
 		// Convert to proper OBU format with size fields for libaom
 		frameData := av1NormalizeOBUs(d.obuBuffer, d.seqHeader, d.frameType == FrameTypeKey)
-
-		if av1DebugCount <= 3 {
-			log.Printf("AV1 Depacketizer: normalized %d -> %d bytes",
-				len(d.obuBuffer), len(frameData))
-			av1LogOBUStructure(frameData)
-		}
 
 		frame := &EncodedFrame{
 			Data:      frameData,
@@ -249,14 +188,6 @@ func (d *AV1Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	return nil, nil
 }
 
-// isTimestampOlderAV1 returns true if ts1 is older than or equal to ts2, handling 32-bit wraparound.
-func isTimestampOlderAV1(ts1, ts2 uint32) bool {
-	if ts1 == ts2 {
-		return true
-	}
-	diff := ts2 - ts1
-	return diff < 0x80000000
-}
 
 // av1ExtractSequenceHeader extracts the sequence header OBU from frame data.
 func av1ExtractSequenceHeader(data []byte) []byte {
@@ -315,78 +246,6 @@ func av1ExtractSequenceHeader(data []byte) []byte {
 		}
 	}
 	return nil
-}
-
-// av1LogOBUStructure logs the OBU structure for debugging
-func av1LogOBUStructure(data []byte) {
-	offset := 0
-	obuNum := 0
-	for offset < len(data) && obuNum < 10 {
-		if offset >= len(data) {
-			break
-		}
-
-		header := data[offset]
-		forbidden := (header >> 7) & 0x01
-		obuType := (header >> 3) & 0x0F
-		extFlag := (header >> 2) & 0x01
-		hasSize := (header >> 1) & 0x01
-
-		typeName := av1OBUTypeName(obuType)
-
-		if forbidden != 0 {
-			log.Printf("  OBU %d @ offset %d: INVALID (forbidden bit set) header=0x%02x", obuNum, offset, header)
-			break
-		}
-
-		headerSize := 1
-		if extFlag == 1 {
-			headerSize = 2
-		}
-
-		if hasSize == 1 && offset+headerSize < len(data) {
-			size, sizeBytes := av1ReadLEB128(data[offset+headerSize:])
-			if sizeBytes > 0 {
-				log.Printf("  OBU %d @ offset %d: type=%d (%s) ext=%d hasSize=1 size=%d",
-					obuNum, offset, obuType, typeName, extFlag, size)
-				offset += headerSize + sizeBytes + int(size)
-			} else {
-				log.Printf("  OBU %d @ offset %d: type=%d (%s) ext=%d hasSize=1 (invalid LEB128)",
-					obuNum, offset, obuType, typeName, extFlag)
-				break
-			}
-		} else {
-			log.Printf("  OBU %d @ offset %d: type=%d (%s) ext=%d hasSize=0 (low-overhead, rest of frame)",
-				obuNum, offset, obuType, typeName, extFlag)
-			break // Can't determine size without parsing OBU internals
-		}
-		obuNum++
-	}
-}
-
-func av1OBUTypeName(t byte) string {
-	switch t {
-	case 1:
-		return "SequenceHeader"
-	case 2:
-		return "TemporalDelimiter"
-	case 3:
-		return "FrameHeader"
-	case 4:
-		return "TileGroup"
-	case 5:
-		return "Metadata"
-	case 6:
-		return "Frame"
-	case 7:
-		return "RedundantFrameHeader"
-	case 8:
-		return "TileList"
-	case 15:
-		return "Padding"
-	default:
-		return "Unknown"
-	}
 }
 
 // av1NormalizeOBUs converts WebRTC AV1 data to a format libaom can decode.
@@ -531,86 +390,4 @@ func init() {
 	RegisterVideoDepacketizer(VideoCodecAV1, func() (RTPDepacketizer, error) {
 		return NewAV1Depacketizer(), nil
 	})
-}
-
-// AV1SaveCapturedPackets writes captured RTP packets to the configured file.
-// File format: [packet_count:uint32] + for each: [len:uint32][data:bytes]
-func AV1SaveCapturedPackets() {
-	if AV1CaptureFile == "" || len(av1CapturedPackets) == 0 {
-		return
-	}
-
-	f, err := os.Create(AV1CaptureFile)
-	if err != nil {
-		log.Printf("AV1 Capture: failed to create file %s: %v", AV1CaptureFile, err)
-		return
-	}
-	defer f.Close()
-
-	// Write packet count
-	countBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(countBuf, uint32(len(av1CapturedPackets)))
-	if _, err := f.Write(countBuf); err != nil {
-		log.Printf("AV1 Capture: failed to write count: %v", err)
-		return
-	}
-
-	// Write each packet
-	lenBuf := make([]byte, 4)
-	for i, pkt := range av1CapturedPackets {
-		binary.BigEndian.PutUint32(lenBuf, uint32(len(pkt)))
-		if _, err := f.Write(lenBuf); err != nil {
-			log.Printf("AV1 Capture: failed to write packet %d length: %v", i, err)
-			return
-		}
-		if _, err := f.Write(pkt); err != nil {
-			log.Printf("AV1 Capture: failed to write packet %d data: %v", i, err)
-			return
-		}
-	}
-
-	log.Printf("AV1 Capture: saved %d packets to %s", len(av1CapturedPackets), AV1CaptureFile)
-}
-
-// AV1LoadCapturedPackets loads RTP packets from a capture file.
-// Returns the raw RTP packet bytes for replay testing.
-func AV1LoadCapturedPackets(filename string) ([][]byte, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(data) < 4 {
-		return nil, nil
-	}
-
-	count := binary.BigEndian.Uint32(data[:4])
-	offset := 4
-	packets := make([][]byte, 0, count)
-
-	for i := uint32(0); i < count && offset+4 <= len(data); i++ {
-		pktLen := binary.BigEndian.Uint32(data[offset : offset+4])
-		offset += 4
-
-		if offset+int(pktLen) > len(data) {
-			break
-		}
-
-		pkt := make([]byte, pktLen)
-		copy(pkt, data[offset:offset+int(pktLen)])
-		packets = append(packets, pkt)
-		offset += int(pktLen)
-	}
-
-	return packets, nil
-}
-
-// AV1ClearCapturedPackets clears any captured packets and resets capture state.
-func AV1ClearCapturedPackets() {
-	av1CapturedPackets = nil
-}
-
-// AV1SetCaptureLimit sets the maximum number of packets to capture.
-func AV1SetCaptureLimit(limit int) {
-	av1CaptureLimit = limit
 }

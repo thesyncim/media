@@ -52,14 +52,13 @@ func handleCameras(w http.ResponseWriter, r *http.Request) {
 }
 
 type streamConfig struct {
-	Codec            string `json:"codec"`
-	Width            int    `json:"width"`
-	Height           int    `json:"height"`
-	Bitrate          int    `json:"bitrate"`
-	FPS              int    `json:"fps"`
-	Source           string `json:"source"` // "pattern" or "camera"
-	CameraID         string `json:"cameraId"`
-	KeyframeInterval int    `json:"keyframeInterval"` // Keyframe interval in frames (0 = auto)
+	Codec    string `json:"codec"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	Bitrate  int    `json:"bitrate"`
+	FPS      int    `json:"fps"`
+	Source   string `json:"source"` // "pattern" or "camera"
+	CameraID string `json:"cameraId"`
 }
 
 type offerRequest struct {
@@ -256,11 +255,10 @@ func streamVideo(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP, p
 	defer source.Close()
 
 	config := media.VideoEncoderConfig{
-		Width:            cfg.Width,
-		Height:           cfg.Height,
-		BitrateBps:       cfg.Bitrate * 1000,
-		FPS:              cfg.FPS,
-		KeyframeInterval: cfg.KeyframeInterval,
+		Width:      cfg.Width,
+		Height:     cfg.Height,
+		BitrateBps: cfg.Bitrate * 1000,
+		FPS:        cfg.FPS,
 	}
 
 	var encoder media.VideoEncoder
@@ -279,6 +277,7 @@ func streamVideo(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP, p
 		return
 	}
 	defer encoder.Close()
+	encodeBuf := make([]byte, encoder.MaxEncodedSize())
 
 	packetizer, err := media.CreateVideoPacketizer(codec, ssrc, pt, 1200)
 	if err != nil {
@@ -310,9 +309,13 @@ func streamVideo(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP, p
 				continue
 			}
 
-			encoded, err := encoder.Encode(frame)
-			if err != nil || encoded == nil {
+			result, err := encoder.Encode(frame, encodeBuf)
+			if err != nil || result.N == 0 {
 				continue
+			}
+			encoded := &media.EncodedFrame{
+				Data:      encodeBuf[:result.N],
+				FrameType: result.FrameType,
 			}
 
 			packets, err := packetizer.Packetize(encoded)

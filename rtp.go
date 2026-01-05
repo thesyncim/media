@@ -357,3 +357,16 @@ type RTPReceiverStats struct {
 
 // Default MTU for RTP packets (UDP safe)
 const DefaultMTU = 1200
+
+// IsRTPTimestampOlder returns true if ts1 is older than or equal to ts2,
+// handling 32-bit wraparound correctly per RTP timestamp comparison rules.
+// This is used by depacketizers to discard late-arriving packets.
+func IsRTPTimestampOlder(ts1, ts2 uint32) bool {
+	if ts1 == ts2 {
+		return true
+	}
+	// Standard RTP timestamp comparison with wraparound handling:
+	// ts1 is older if (ts2 - ts1) < 2^31
+	diff := ts2 - ts1
+	return diff < 0x80000000
+}

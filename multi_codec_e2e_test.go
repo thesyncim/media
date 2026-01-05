@@ -41,6 +41,7 @@ func testMultiTranscoderWithInputCodec(t *testing.T, codecName string, inputCode
 		t.Fatalf("Failed to create %s encoder: %v", codecName, err)
 	}
 	defer srcEnc.Close()
+	srcEncodeBuf := make([]byte, srcEnc.MaxEncodedSize())
 
 	// Create MultiTranscoder with multiple output variants
 	outputs := []OutputConfig{
@@ -104,12 +105,16 @@ func testMultiTranscoderWithInputCodec(t *testing.T, codecName string, inputCode
 			srcEnc.RequestKeyframe()
 		}
 
-		encoded, err := srcEnc.Encode(rawFrame)
+		encResult, err := srcEnc.Encode(rawFrame, srcEncodeBuf)
 		if err != nil {
 			t.Fatalf("Source encode failed at frame %d: %v", i, err)
 		}
-		if encoded == nil {
+		if encResult.N == 0 {
 			continue
+		}
+		encoded := &EncodedFrame{
+			Data:      srcEncodeBuf[:encResult.N],
+			FrameType: encResult.FrameType,
 		}
 
 		result, err := mt.Transcode(encoded)
@@ -163,6 +168,7 @@ func TestMultiTranscoderDynamicAddAllCodecs(t *testing.T) {
 		t.Fatalf("Failed to create VP8 encoder: %v", err)
 	}
 	defer srcEnc.Close()
+	srcEncodeBuf := make([]byte, srcEnc.MaxEncodedSize())
 
 	// Create transcoder with passthrough only
 	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
@@ -188,7 +194,7 @@ func TestMultiTranscoderDynamicAddAllCodecs(t *testing.T) {
 
 	// Phase 1: Just passthrough
 	t.Log("Phase 1: Passthrough only")
-	phase1Count := transcodeFrames(t, mt, srcEnc, rawFrame, 30)
+	phase1Count := transcodeFrames(t, mt, srcEnc, srcEncodeBuf, rawFrame, 30)
 	t.Logf("Phase 1 results: %v", phase1Count)
 
 	// Dynamically add VP8 (if different from input, skip)
@@ -205,7 +211,7 @@ func TestMultiTranscoderDynamicAddAllCodecs(t *testing.T) {
 
 	// Phase 2: With VP9
 	t.Log("Phase 2: With VP9")
-	phase2Count := transcodeFrames(t, mt, srcEnc, rawFrame, 30)
+	phase2Count := transcodeFrames(t, mt, srcEnc, srcEncodeBuf, rawFrame, 30)
 	t.Logf("Phase 2 results: %v", phase2Count)
 
 	// Add H264
@@ -221,7 +227,7 @@ func TestMultiTranscoderDynamicAddAllCodecs(t *testing.T) {
 
 	// Phase 3: With H264
 	t.Log("Phase 3: With H264")
-	phase3Count := transcodeFrames(t, mt, srcEnc, rawFrame, 30)
+	phase3Count := transcodeFrames(t, mt, srcEnc, srcEncodeBuf, rawFrame, 30)
 	t.Logf("Phase 3 results: %v", phase3Count)
 
 	// Add AV1
@@ -237,7 +243,7 @@ func TestMultiTranscoderDynamicAddAllCodecs(t *testing.T) {
 
 	// Phase 4: With all codecs
 	t.Log("Phase 4: All codecs")
-	phase4Count := transcodeFrames(t, mt, srcEnc, rawFrame, 30)
+	phase4Count := transcodeFrames(t, mt, srcEnc, srcEncodeBuf, rawFrame, 30)
 	t.Logf("Phase 4 results: %v", phase4Count)
 
 	// Verify each phase has increasing output
@@ -249,7 +255,7 @@ func TestMultiTranscoderDynamicAddAllCodecs(t *testing.T) {
 	}
 }
 
-func transcodeFrames(t *testing.T, mt *MultiTranscoder, enc VideoEncoder, frame *VideoFrame, count int) map[string]int {
+func transcodeFrames(t *testing.T, mt *MultiTranscoder, enc VideoEncoder, encodeBuf []byte, frame *VideoFrame, count int) map[string]int {
 	results := make(map[string]int)
 
 	for i := 0; i < count; i++ {
@@ -257,9 +263,13 @@ func transcodeFrames(t *testing.T, mt *MultiTranscoder, enc VideoEncoder, frame 
 			enc.RequestKeyframe()
 		}
 
-		encoded, err := enc.Encode(frame)
-		if err != nil || encoded == nil {
+		encResult, err := enc.Encode(frame, encodeBuf)
+		if err != nil || encResult.N == 0 {
 			continue
+		}
+		encoded := &EncodedFrame{
+			Data:      encodeBuf[:encResult.N],
+			FrameType: encResult.FrameType,
 		}
 
 		result, err := mt.Transcode(encoded)
@@ -295,6 +305,7 @@ func TestH264InputSpecifically(t *testing.T) {
 		t.Fatalf("Failed to create H264 encoder: %v", err)
 	}
 	defer srcEnc.Close()
+	srcEncodeBuf := make([]byte, srcEnc.MaxEncodedSize())
 
 	// Create transcoder with H264 input, output to VP8
 	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
@@ -338,12 +349,16 @@ func TestH264InputSpecifically(t *testing.T) {
 			srcEnc.RequestKeyframe()
 		}
 
-		encoded, err := srcEnc.Encode(rawFrame)
+		encResult, err := srcEnc.Encode(rawFrame, srcEncodeBuf)
 		if err != nil {
 			t.Fatalf("H264 encode failed: %v", err)
 		}
-		if encoded == nil {
+		if encResult.N == 0 {
 			continue
+		}
+		encoded := &EncodedFrame{
+			Data:      srcEncodeBuf[:encResult.N],
+			FrameType: encResult.FrameType,
 		}
 
 		t.Logf("Frame %d: encoded %d bytes, keyframe=%v", i, len(encoded.Data), encoded.IsKeyframe())
@@ -410,6 +425,7 @@ func TestConcurrentTranscoding(t *testing.T) {
 				return
 			}
 			defer enc.Close()
+			encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 			mt, err := NewMultiTranscoder(MultiTranscoderConfig{
 				InputCodec: VideoCodecVP8,
@@ -434,9 +450,13 @@ func TestConcurrentTranscoding(t *testing.T) {
 			enc.RequestKeyframe()
 
 			for j := 0; j < framesPerTranscoder; j++ {
-				encoded, _ := enc.Encode(frame)
-				if encoded == nil {
+				encResult, _ := enc.Encode(frame, encodeBuf)
+				if encResult.N == 0 {
 					continue
+				}
+				encoded := &EncodedFrame{
+					Data:      encodeBuf[:encResult.N],
+					FrameType: encResult.FrameType,
 				}
 
 				result, err := mt.Transcode(encoded)

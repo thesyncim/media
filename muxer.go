@@ -438,12 +438,12 @@ func (m *MediaMuxer) Flush() []*SyncedMedia {
 
 // RequestVideoKeyframe requests a keyframe from a specific video variant.
 func (m *MediaMuxer) RequestVideoKeyframe(variantID string) {
-	m.videoTranscoder.RequestKeyframe(variantID)
+	m.videoTranscoder.RequestEncoderKeyframe(variantID)
 }
 
 // RequestVideoKeyframeAll requests keyframes from all video variants.
 func (m *MediaMuxer) RequestVideoKeyframeAll() {
-	m.videoTranscoder.RequestKeyframeAll()
+	m.videoTranscoder.RequestEncoderKeyframeAll()
 }
 
 // SetVideoBitrate updates the bitrate for a specific video variant.

@@ -453,25 +453,27 @@ func createTestEncodedFrame(t *testing.T, codec media.VideoCodec, width, height 
 		t.Fatalf("failed to create encoder: %v", err)
 	}
 	defer enc.Close()
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	// Encode frames until we get output
-	var encoded *media.EncodedFrame
-	for i := 0; i < 60 && encoded == nil; i++ {
-		encoded, _ = enc.Encode(raw)
+	var result media.EncodeResult
+	var gotOutput bool
+	for i := 0; i < 60 && !gotOutput; i++ {
+		result, _ = enc.Encode(raw, encodeBuf)
+		gotOutput = result.N > 0
 	}
 
-	if encoded == nil {
+	if !gotOutput {
 		t.Fatal("failed to get encoded frame")
 	}
 
 	// Copy data
-	data := make([]byte, len(encoded.Data))
-	copy(data, encoded.Data)
+	data := make([]byte, result.N)
+	copy(data, encodeBuf[:result.N])
 
 	return &media.EncodedFrame{
 		Data:      data,
-		Timestamp: encoded.Timestamp,
-		FrameType: encoded.FrameType,
+		FrameType: result.FrameType,
 	}
 }
 

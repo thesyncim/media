@@ -10,15 +10,25 @@ import (
 	"time"
 )
 
+// Transcoder defaults
+const (
+	DefaultVideoWidth      = 1920
+	DefaultVideoHeight     = 1080
+	DefaultVideoBitrateBps = 2_000_000
+	DefaultVideoFPS        = 30
+	DefaultEncodeTimeout   = 500 * time.Millisecond
+)
+
 // =============================================================================
 // Single-Output Transcoder
 // =============================================================================
 
 // Transcoder transcodes video from one codec to another.
 type Transcoder struct {
-	decoder VideoDecoder
-	encoder VideoEncoder
-	scaler  *VideoScaler // for dimension mismatch
+	decoder   VideoDecoder
+	encoder   VideoEncoder
+	scaler    *VideoScaler // for dimension mismatch
+	encodeBuf []byte       // buffer for encoder output
 
 	inputCodec  VideoCodec
 	outputCodec VideoCodec
@@ -53,16 +63,16 @@ func NewTranscoder(config TranscoderConfig) (*Transcoder, error) {
 
 	// Set defaults
 	if config.Width == 0 {
-		config.Width = 1920
+		config.Width = DefaultVideoWidth
 	}
 	if config.Height == 0 {
-		config.Height = 1080
+		config.Height = DefaultVideoHeight
 	}
 	if config.BitrateBps == 0 {
-		config.BitrateBps = 2_000_000
+		config.BitrateBps = DefaultVideoBitrateBps
 	}
 	if config.FPS == 0 {
-		config.FPS = 30
+		config.FPS = DefaultVideoFPS
 	}
 
 	t := &Transcoder{
@@ -96,6 +106,9 @@ func NewTranscoder(config TranscoderConfig) (*Transcoder, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Allocate encode buffer
+	t.encodeBuf = make([]byte, t.encoder.MaxEncodedSize())
 
 	// Create decoder if input codec is known
 	if config.InputCodec != VideoCodecUnknown {
@@ -174,14 +187,21 @@ func (t *Transcoder) Transcode(input *EncodedFrame) (*EncodedFrame, error) {
 	}
 
 	// Encode
-	encoded, err := t.encoder.Encode(frameToEncode)
+	result, err := t.encoder.Encode(frameToEncode, t.encodeBuf)
 	if err != nil {
 		return nil, err
 	}
-	if encoded != nil {
-		// Propagate source timestamp to encoded output
-		encoded.Timestamp = input.Timestamp
+	if result.N == 0 {
+		return nil, nil // Encoder buffering
 	}
+
+	// Build encoded frame with source timestamp
+	encoded := &EncodedFrame{
+		Data:      make([]byte, result.N),
+		FrameType: result.FrameType,
+		Timestamp: input.Timestamp,
+	}
+	copy(encoded.Data, t.encodeBuf[:result.N])
 	return encoded, nil
 }
 
@@ -191,7 +211,21 @@ func (t *Transcoder) Transcode(input *EncodedFrame) (*EncodedFrame, error) {
 func (t *Transcoder) TranscodeRaw(frame *VideoFrame) (*EncodedFrame, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.encoder.Encode(frame)
+
+	result, err := t.encoder.Encode(frame, t.encodeBuf)
+	if err != nil {
+		return nil, err
+	}
+	if result.N == 0 {
+		return nil, nil
+	}
+
+	encoded := &EncodedFrame{
+		Data:      make([]byte, result.N),
+		FrameType: result.FrameType,
+	}
+	copy(encoded.Data, t.encodeBuf[:result.N])
+	return encoded, nil
 }
 
 // RequestKeyframe requests the encoder to produce a keyframe.
@@ -380,6 +414,7 @@ func (r *TranscodeResult) Get(variantID string) *EncodedFrame {
 type outputPipeline struct {
 	variant     OutputConfig
 	encoder     VideoEncoder // nil if passthrough
+	encodeBuf   []byte       // buffer for encoder output
 	scaler      *VideoScaler
 	passthrough bool  // if true, forward input without encode
 	removed     int32 // atomic: 1 if marked for removal (encoder may still be in use)
@@ -427,8 +462,6 @@ type MultiTranscoder struct {
 	minKeyframeInterval int64 // minimum interval between keyframe requests in nanoseconds
 
 	mu sync.RWMutex // RWMutex allows concurrent reads (RequestKeyframe, etc)
-
-	frameCount int // debug counter
 }
 
 // MultiTranscoderConfig configures a multi-output transcoder.
@@ -484,7 +517,7 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 
 	encodeTimeout := config.EncodeTimeout
 	if encodeTimeout == 0 {
-		encodeTimeout = 500 * time.Millisecond // Default timeout
+		encodeTimeout = DefaultEncodeTimeout
 	}
 
 	minKeyframeInterval := config.MinKeyframeInterval
@@ -522,10 +555,10 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 			h = config.InputHeight
 		}
 		if w == 0 {
-			w = 1920 // Default
+			w = DefaultVideoWidth
 		}
 		if h == 0 {
-			h = 1080
+			h = DefaultVideoHeight
 		}
 
 		fps := variant.FPS
@@ -533,12 +566,12 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 			fps = config.InputFPS
 		}
 		if fps == 0 {
-			fps = 30
+			fps = DefaultVideoFPS
 		}
 
 		bitrate := variant.BitrateBps
 		if bitrate == 0 {
-			bitrate = 2_000_000
+			bitrate = DefaultVideoBitrateBps
 		}
 
 		encoderConfig := VideoEncoderConfig{
@@ -563,6 +596,7 @@ func NewMultiTranscoder(config MultiTranscoderConfig) (*MultiTranscoder, error) 
 			return nil, fmt.Errorf("failed to create encoder for %s: %w", variant.ID, err)
 		}
 		pipeline.encoder = encoder
+		pipeline.encodeBuf = make([]byte, encoder.MaxEncodedSize())
 		mt.pipelines[variant.ID] = pipeline
 	}
 
@@ -707,13 +741,6 @@ func (mt *MultiTranscoder) Transcode(input *EncodedFrame) (*TranscodeResult, err
 		return nil, err
 	}
 
-	// Debug: log variant count periodically
-	mt.frameCount++
-	if mt.frameCount%100 == 0 {
-		fmt.Printf("[DEBUG] Transcode frame %d: passthrough=%d, encoded=%d, total pipelines=%d\n",
-			mt.frameCount, len(result.Variants), len(encodeResult.Variants), len(mt.pipelines))
-	}
-
 	// Merge encode results with passthrough results
 	result.Variants = append(result.Variants, encodeResult.Variants...)
 	return result, nil
@@ -767,15 +794,19 @@ func (mt *MultiTranscoder) transcodeRawSinglePipeline(frame *VideoFrame, id stri
 	}
 
 	inputFrame := mt.prepareInputFrame(frame, pipeline)
-	encoded, err := pipeline.encoder.Encode(inputFrame)
+	encResult, err := pipeline.encoder.Encode(inputFrame, pipeline.encodeBuf)
 	if err != nil {
 		return nil, fmt.Errorf("encode error for %s: %w", id, err)
 	}
 
-	if encoded != nil {
-		// Propagate source timestamp to encoded output
-		// This ensures all variants have consistent timestamps from the source
-		encoded.Timestamp = mt.sourceTimestamp
+	if encResult.N > 0 {
+		// Build encoded frame with source timestamp
+		encoded := &EncodedFrame{
+			Data:      make([]byte, encResult.N),
+			FrameType: encResult.FrameType,
+			Timestamp: mt.sourceTimestamp,
+		}
+		copy(encoded.Data, pipeline.encodeBuf[:encResult.N])
 		result.Variants = append(result.Variants, VariantFrame{
 			VariantID: id,
 			Frame:     encoded,
@@ -828,12 +859,25 @@ func (mt *MultiTranscoder) transcodeRawParallelPipelines(frame *VideoFrame, ids 
 				return
 			}
 
-			encoded, err := p.encoder.Encode(inputFrame)
+			encRes, err := p.encoder.Encode(inputFrame, p.encodeBuf)
+			if err != nil {
+				resultCh <- encodeResult{id: variantID, err: err}
+				return
+			}
+
+			var encoded *EncodedFrame
+			if encRes.N > 0 {
+				encoded = &EncodedFrame{
+					Data:      make([]byte, encRes.N),
+					FrameType: encRes.FrameType,
+				}
+				copy(encoded.Data, p.encodeBuf[:encRes.N])
+			}
 			resultCh <- encodeResult{
 				id:    variantID,
 				frame: encoded,
 				codec: p.variant.Codec,
-				err:   err,
+				err:   nil,
 			}
 		}(ids[i], pipeline, scaledFrames[i])
 	}
@@ -970,10 +1014,10 @@ func (mt *MultiTranscoder) RequestSourceKeyframe() {
 	mt.requestKeyframeFromSource()
 }
 
-// RequestKeyframe requests a keyframe from a specific output variant.
+// RequestEncoderKeyframe requests a keyframe from a specific output variant's encoder.
 // For passthrough variants (no encoder), this requests a keyframe from the source.
 // Note: Source requests are rate-limited by MinKeyframeInterval.
-func (mt *MultiTranscoder) RequestKeyframe(variantID string) {
+func (mt *MultiTranscoder) RequestEncoderKeyframe(variantID string) {
 	mt.mu.RLock()
 	pipeline, ok := mt.pipelines[variantID]
 	mt.mu.RUnlock()
@@ -991,10 +1035,10 @@ func (mt *MultiTranscoder) RequestKeyframe(variantID string) {
 	}
 }
 
-// RequestKeyframeAll requests keyframes from all variants.
+// RequestEncoderKeyframeAll requests keyframes from all output variant encoders.
 // For passthrough variants, requests a keyframe from the source.
 // Note: Source requests are rate-limited by MinKeyframeInterval.
-func (mt *MultiTranscoder) RequestKeyframeAll() {
+func (mt *MultiTranscoder) RequestEncoderKeyframeAll() {
 	mt.mu.RLock()
 	hasPassthrough := false
 	for _, pipeline := range mt.pipelines {
@@ -1047,6 +1091,17 @@ func (mt *MultiTranscoder) VariantConfig(variantID string) (OutputConfig, bool) 
 	return OutputConfig{}, false
 }
 
+// WillPassthrough returns true if the variant will pass through input without re-encoding.
+func (mt *MultiTranscoder) WillPassthrough(variantID string) bool {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	pipeline, ok := mt.pipelines[variantID]
+	if !ok {
+		return false
+	}
+	return pipeline.passthrough && pipeline.variant.Codec == mt.inputCodec
+}
+
 // AddOutput adds a new output variant dynamically.
 // The new variant will be available for the next Transcode call.
 // Thread-safe: can be called while transcoding is in progress.
@@ -1094,10 +1149,10 @@ func (mt *MultiTranscoder) AddOutput(config OutputConfig) error {
 		h = inputH
 	}
 	if w == 0 {
-		w = 1920
+		w = DefaultVideoWidth
 	}
 	if h == 0 {
-		h = 1080
+		h = DefaultVideoHeight
 	}
 
 	fps := config.FPS
@@ -1105,12 +1160,12 @@ func (mt *MultiTranscoder) AddOutput(config OutputConfig) error {
 		fps = inputFPS
 	}
 	if fps == 0 {
-		fps = 30
+		fps = DefaultVideoFPS
 	}
 
 	bitrate := config.BitrateBps
 	if bitrate == 0 {
-		bitrate = 2_000_000
+		bitrate = DefaultVideoBitrateBps
 	}
 
 	encoderConfig := VideoEncoderConfig{
@@ -1142,9 +1197,9 @@ func (mt *MultiTranscoder) AddOutput(config OutputConfig) error {
 		return errors.New("output variant already exists: " + config.ID)
 	}
 	pipeline.encoder = encoder
+	pipeline.encodeBuf = make([]byte, encoder.MaxEncodedSize())
 	mt.pipelines[config.ID] = pipeline
 	callback := mt.onKeyframeNeeded
-	pipelineCount := len(mt.pipelines)
 	mt.mu.Unlock()
 
 	// Request keyframe from SOURCE so the decoder can decode frames for the new encoder
@@ -1153,8 +1208,6 @@ func (mt *MultiTranscoder) AddOutput(config OutputConfig) error {
 		go callback()
 	}
 
-	fmt.Printf("[DEBUG] AddOutput: added %s (codec=%d, %dx%d), total pipelines=%d\n",
-		config.ID, config.Codec, w, h, pipelineCount)
 	return nil
 }
 

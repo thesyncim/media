@@ -387,77 +387,7 @@ func (e *H264Encoder) GetPPS() []byte {
 }
 
 // Encode implements VideoEncoder.
-func (e *H264Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.handle == 0 {
-		return nil, fmt.Errorf("encoder not initialized")
-	}
-
-	forceKeyframe := int32(0)
-	if e.keyframeReq.Swap(false) {
-		forceKeyframe = 1
-	}
-
-	var frameType int32
-	var pts, dts int64
-
-	result := mediaH264EncoderEncode(
-		e.handle,
-		uintptr(unsafe.Pointer(&frame.Data[0][0])),
-		uintptr(unsafe.Pointer(&frame.Data[1][0])),
-		uintptr(unsafe.Pointer(&frame.Data[2][0])),
-		int32(frame.Stride[0]),
-		int32(frame.Stride[1]),
-		forceKeyframe,
-		uintptr(unsafe.Pointer(&e.outputBuf[0])),
-		int32(len(e.outputBuf)),
-		uintptr(unsafe.Pointer(&frameType)),
-		uintptr(unsafe.Pointer(&pts)),
-		uintptr(unsafe.Pointer(&dts)),
-	)
-
-	if result < 0 {
-		return nil, fmt.Errorf("encode failed: %s", getH264Error())
-	}
-
-	if result == 0 {
-		return nil, nil
-	}
-
-	data := make([]byte, result)
-	copy(data, e.outputBuf[:result])
-
-	ft := FrameTypeDelta
-	if frameType == mediaH264FrameIDR || frameType == mediaH264FrameI {
-		ft = FrameTypeKey
-	}
-
-	fps := e.config.FPS
-	if fps <= 0 {
-		fps = 30
-	}
-	timestamp := uint32(pts * (90000 / int64(fps)))
-
-	e.statsMu.Lock()
-	e.stats.FramesEncoded++
-	if ft == FrameTypeKey {
-		e.stats.KeyframesEncoded++
-	}
-	e.stats.BytesEncoded += uint64(result)
-	e.statsMu.Unlock()
-
-	return &EncodedFrame{
-		Data:      data,
-		FrameType: ft,
-		Timestamp: timestamp,
-		Duration:  90000 / uint32(fps),
-	}, nil
-}
-
-// EncodeInto implements VideoEncoder. Zero-allocation encode into provided buffer.
-func (e *H264Encoder) EncodeInto(frame *VideoFrame, buf []byte) (EncodeResult, error) {
+func (e *H264Encoder) Encode(frame *VideoFrame, buf []byte) (EncodeResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

@@ -35,17 +35,27 @@ func TestAllCombinations(t *testing.T) {
 
 	bitrates := []int{500, 1000, 2000, 4000} // kbps
 
+	// In short mode, test only a subset of combinations
+	if testing.Short() {
+		codecs = codecs[:2]          // VP8, VP9 only
+		fpsList = []int{30}          // 30fps only
+		resolutions = resolutions[:2] // 240p, 360p only
+		bitrates = []int{1000}       // 1Mbps only
+	}
+
 	sources := []string{"pattern"}
 
-	// Check if camera is available
-	provider := media.GetDeviceProvider()
+	// Check if camera is available (skip in short mode - camera tests are slow)
 	var cameraID string
-	if provider != nil {
-		devices, err := provider.ListVideoDevices(context.Background())
-		if err == nil && len(devices) > 0 {
-			sources = append(sources, "camera")
-			cameraID = devices[0].DeviceID
-			t.Logf("Camera available: %s", devices[0].Label)
+	if !testing.Short() {
+		provider := media.GetDeviceProvider()
+		if provider != nil {
+			devices, err := provider.ListVideoDevices(context.Background())
+			if err == nil && len(devices) > 0 {
+				sources = append(sources, "camera")
+				cameraID = devices[0].DeviceID
+				t.Logf("Camera available: %s", devices[0].Label)
+			}
 		}
 	}
 
@@ -113,11 +123,10 @@ func testKeyframeInterval(t *testing.T, codecName string, codec media.VideoCodec
 	}
 
 	config := media.VideoEncoderConfig{
-		Width:            width,
-		Height:           height,
-		BitrateBps:       1000000,
-		FPS:              fps,
-		KeyframeInterval: keyframeInterval,
+		Width:      width,
+		Height:     height,
+		BitrateBps: 1000000,
+		FPS:        fps,
 	}
 
 	var encoder media.VideoEncoder
@@ -136,6 +145,7 @@ func testKeyframeInterval(t *testing.T, codecName string, codec media.VideoCodec
 		t.Fatalf("Failed to create %s encoder: %v", codecName, err)
 	}
 	defer encoder.Close()
+	encodeBuf := make([]byte, encoder.MaxEncodedSize())
 
 	// Encode enough frames to see keyframes
 	framesToEncode := 90 // 3 seconds at 30fps
@@ -156,13 +166,13 @@ func testKeyframeInterval(t *testing.T, codecName string, codec media.VideoCodec
 				continue
 			}
 
-			encoded, err := encoder.Encode(frame)
-			if err != nil || encoded == nil {
+			result, err := encoder.Encode(frame, encodeBuf)
+			if err != nil || result.N == 0 {
 				continue
 			}
 
 			totalFrames++
-			if encoded.FrameType == media.FrameTypeKey {
+			if result.FrameType == media.FrameTypeKey {
 				keyframeCount++
 			}
 		}
@@ -245,6 +255,7 @@ func testCombination(t *testing.T, codecName string, codec media.VideoCodec, wid
 		t.Fatalf("Failed to create %s encoder: %v", codecName, err)
 	}
 	defer encoder.Close()
+	encodeBuf := make([]byte, encoder.MaxEncodedSize())
 
 	// Create packetizer
 	packetizer, err := media.CreateVideoPacketizer(codec, 0x12345678, 96, 1200)
@@ -284,15 +295,19 @@ func testCombination(t *testing.T, codecName string, codec media.VideoCodec, wid
 				continue
 			}
 
-			encoded, err := encoder.Encode(frame)
+			result, err := encoder.Encode(frame, encodeBuf)
 			if err != nil {
 				continue
 			}
 
-			if encoded == nil {
+			if result.N == 0 {
 				continue // Some frames may be skipped
 			}
 
+			encoded := &media.EncodedFrame{
+				Data:      encodeBuf[:result.N],
+				FrameType: result.FrameType,
+			}
 			packets, err := packetizer.Packetize(encoded)
 			if err != nil {
 				continue
@@ -300,7 +315,7 @@ func testCombination(t *testing.T, codecName string, codec media.VideoCodec, wid
 
 			successfulFrames++
 			totalPackets += len(packets)
-			totalBytes += len(encoded.Data)
+			totalBytes += result.N
 		}
 	}
 

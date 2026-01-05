@@ -1118,27 +1118,27 @@ func createEncodedTestFrame(t *testing.T, codec VideoCodec, width, height int, k
 	}
 
 	// Encode multiple frames to handle buffering (especially VP9)
-	var encoded *EncodedFrame
-	for i := 0; i < 60 && encoded == nil; i++ {
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
+	var result EncodeResult
+	for i := 0; i < 60 && result.N == 0; i++ {
 		raw.Timestamp = int64(i) * 33_333_333 // 30fps
-		encoded, err = enc.Encode(raw)
+		result, err = enc.Encode(raw, encodeBuf)
 		if err != nil {
 			t.Fatalf("encode failed: %v", err)
 		}
 	}
 
-	if encoded == nil {
+	if result.N == 0 {
 		t.Fatal("failed to get encoded frame after 60 attempts")
 	}
 
 	// Make a copy since encoder may reuse buffer
-	dataCopy := make([]byte, len(encoded.Data))
-	copy(dataCopy, encoded.Data)
+	dataCopy := make([]byte, result.N)
+	copy(dataCopy, encodeBuf[:result.N])
 
 	return &EncodedFrame{
 		Data:      dataCopy,
-		Timestamp: encoded.Timestamp,
-		FrameType: encoded.FrameType,
+		FrameType: result.FrameType,
 	}
 }
 
@@ -2368,6 +2368,9 @@ func TestMultiTranscoder_AddRemove_Concurrent(t *testing.T) {
 // TestMultiTranscoder_ParallelEncodingEfficiency verifies that parallel encoding
 // provides better performance than sequential encoding would.
 func TestMultiTranscoder_ParallelEncodingEfficiency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping performance test in short mode")
+	}
 	if !IsVP8Available() {
 		t.Skip("VP8 not available")
 	}

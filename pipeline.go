@@ -39,6 +39,7 @@ type VideoEncodePipeline struct {
 	source     VideoSource   // Raw frame source (can be nil if using track)
 	track      VideoTrack    // Or a track as source
 	encoder    VideoEncoder  // Encoder
+	encodeBuf  []byte        // Buffer for encoder output
 	packetizer RTPPacketizer // RTP packetizer
 	writer     RTPWriter     // Output writer
 
@@ -97,6 +98,7 @@ func NewVideoEncodePipeline(config VideoPipelineConfig) (*VideoEncodePipeline, e
 		source:     config.Source,
 		track:      config.Track,
 		encoder:    config.Encoder,
+		encodeBuf:  make([]byte, config.Encoder.MaxEncodedSize()),
 		packetizer: config.Packetizer,
 		writer:     config.Writer,
 		onError:    config.OnError,
@@ -228,7 +230,7 @@ func (p *VideoEncodePipeline) processLoop() {
 
 		// Encode frame
 		encodeStart := time.Now()
-		encoded, err := p.encoder.Encode(frame)
+		result, err := p.encoder.Encode(frame, p.encodeBuf)
 		encodeTime := time.Since(encodeStart)
 
 		if err != nil {
@@ -239,9 +241,15 @@ func (p *VideoEncodePipeline) processLoop() {
 			continue
 		}
 
-		if encoded == nil {
+		if result.N == 0 {
 			continue // Encoder buffering
 		}
+
+		encoded := &EncodedFrame{
+			Data:      make([]byte, result.N),
+			FrameType: result.FrameType,
+		}
+		copy(encoded.Data, p.encodeBuf[:result.N])
 
 		p.statsMu.Lock()
 		p.stats.FramesEncoded++

@@ -82,6 +82,7 @@ func (p *VP9Packetizer) PayloadType() uint8      { p.mu.Lock(); defer p.mu.Unloc
 func (p *VP9Packetizer) SetPayloadType(pt uint8) { p.mu.Lock(); p.payloadType = pt; p.mu.Unlock() }
 func (p *VP9Packetizer) MTU() int                { p.mu.Lock(); defer p.mu.Unlock(); return p.mtu }
 func (p *VP9Packetizer) SetMTU(mtu int)          { p.mu.Lock(); p.mtu = mtu; p.mu.Unlock() }
+func (p *VP9Packetizer) Codec() VideoCodec       { return VideoCodecVP9 }
 
 // VP9Depacketizer implements RTPDepacketizer for VP9 using pion's codecs.
 type VP9Depacketizer struct {
@@ -109,7 +110,7 @@ func (d *VP9Depacketizer) Depacketize(packet *RTPPacket) (*EncodedFrame, error) 
 	}
 
 	// Discard late-arriving packets for already completed frames
-	if d.hasCompletedFrame && isTimestampOlderVP9(packet.Header.Timestamp, d.lastCompletedTs) {
+	if d.hasCompletedFrame && IsRTPTimestampOlder(packet.Header.Timestamp, d.lastCompletedTs) {
 		return nil, nil
 	}
 
@@ -152,14 +153,6 @@ func (d *VP9Depacketizer) Depacketize(packet *RTPPacket) (*EncodedFrame, error) 
 	return nil, nil
 }
 
-// isTimestampOlderVP9 returns true if ts1 is older than or equal to ts2, handling 32-bit wraparound.
-func isTimestampOlderVP9(ts1, ts2 uint32) bool {
-	if ts1 == ts2 {
-		return true
-	}
-	diff := ts2 - ts1
-	return diff < 0x80000000
-}
 
 // DepacketizeBytes processes raw RTP packet bytes.
 func (d *VP9Depacketizer) DepacketizeBytes(data []byte) (*EncodedFrame, error) {
@@ -180,6 +173,9 @@ func (d *VP9Depacketizer) Reset() {
 	d.hasCompletedFrame = false
 	d.mu.Unlock()
 }
+
+// Codec returns the codec type.
+func (d *VP9Depacketizer) Codec() VideoCodec { return VideoCodecVP9 }
 
 func init() {
 	RegisterVideoPacketizer(VideoCodecVP9, func(ssrc uint32, pt uint8, mtu int) (RTPPacketizer, error) {

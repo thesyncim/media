@@ -22,6 +22,7 @@ func TestH264DecoderBuffering(t *testing.T) {
 		t.Fatalf("Failed to create H264 encoder: %v", err)
 	}
 	defer enc.Close()
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	// Create decoder
 	dec, err := NewH264Decoder(VideoDecoderConfig{})
@@ -63,13 +64,18 @@ func TestH264DecoderBuffering(t *testing.T) {
 			enc.RequestKeyframe()
 		}
 
-		encoded, err := enc.Encode(rawFrame)
+		result, err := enc.Encode(rawFrame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode failed at frame %d: %v", i, err)
 		}
 
-		if encoded == nil || len(encoded.Data) == 0 {
+		if result.N == 0 {
 			continue
+		}
+
+		encoded := &EncodedFrame{
+			Data:      encodeBuf[:result.N],
+			FrameType: result.FrameType,
 		}
 
 		// Try to decode

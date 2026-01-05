@@ -240,17 +240,17 @@ func streamComposited(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticR
 	overlayLayerID := compositor.AddLayer(overlaySource, 0, 0)
 
 	encoder, err := media.NewVP8Encoder(media.VideoEncoderConfig{
-		Width:            640,
-		Height:           480,
-		BitrateBps:       1_500_000,
-		FPS:              30,
-		KeyframeInterval: 60,
+		Width:      640,
+		Height:     480,
+		BitrateBps: 1_500_000,
+		FPS:        30,
 	})
 	if err != nil {
 		log.Printf("Encoder error: %v", err)
 		return
 	}
 	defer encoder.Close()
+	encodeBuf := make([]byte, encoder.MaxEncodedSize())
 
 	packetizer, err := media.CreateVideoPacketizer(media.VideoCodecVP8, 0x12345678, 96, 1200)
 	if err != nil {
@@ -298,9 +298,13 @@ func streamComposited(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticR
 				continue
 			}
 
-			encoded, err := encoder.Encode(composited)
-			if err != nil || encoded == nil {
+			result, err := encoder.Encode(composited, encodeBuf)
+			if err != nil || result.N == 0 {
 				continue
+			}
+			encoded := &media.EncodedFrame{
+				Data:      encodeBuf[:result.N],
+				FrameType: result.FrameType,
 			}
 
 			packets, err := packetizer.Packetize(encoded)

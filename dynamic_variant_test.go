@@ -5,6 +5,21 @@ import (
 	"time"
 )
 
+// encodeFrame is a test helper that encodes a frame and returns an EncodedFrame
+func encodeFrame(t *testing.T, enc VideoEncoder, frame *VideoFrame, buf []byte) *EncodedFrame {
+	result, err := enc.Encode(frame, buf)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+	if result.N == 0 {
+		return nil
+	}
+	return &EncodedFrame{
+		Data:      buf[:result.N],
+		FrameType: result.FrameType,
+	}
+}
+
 // TestDynamicVariantAddition tests adding a variant while transcoding is in progress
 func TestDynamicVariantAddition(t *testing.T) {
 	// Create source encoder (VP8)
@@ -18,6 +33,7 @@ func TestDynamicVariantAddition(t *testing.T) {
 		t.Fatalf("Failed to create source encoder: %v", err)
 	}
 	defer srcEncoder.Close()
+	srcEncodeBuf := make([]byte, srcEncoder.MaxEncodedSize())
 
 	// Create transcoder with 1 initial output (passthrough + VP8)
 	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
@@ -43,10 +59,7 @@ func TestDynamicVariantAddition(t *testing.T) {
 
 	// Encode source frame
 	srcEncoder.RequestKeyframe()
-	srcEncoded, err := srcEncoder.Encode(rawFrame)
-	if err != nil {
-		t.Fatalf("Failed to encode source: %v", err)
-	}
+	srcEncoded := encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 
 	// Transcode 30 frames with initial 2 variants
 	t.Log("Phase 1: Transcoding with 2 variants...")
@@ -59,7 +72,7 @@ func TestDynamicVariantAddition(t *testing.T) {
 		if result != nil {
 			phase1Variants += len(result.Variants)
 		}
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 	}
 	t.Logf("Phase 1: Got %d variant outputs (expected ~60)", phase1Variants)
 	if phase1Variants < 50 {
@@ -97,7 +110,7 @@ func TestDynamicVariantAddition(t *testing.T) {
 				}
 			}
 		}
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 	}
 	t.Logf("Phase 2: Got %d variant outputs (expected ~90)", phase2Variants)
 	t.Logf("Phase 2: Saw dyn-vp9 output: %v", seenDynVP9)
@@ -141,7 +154,7 @@ func TestDynamicVariantAddition(t *testing.T) {
 					}
 				}
 			}
-			srcEncoded, _ = srcEncoder.Encode(rawFrame)
+			srcEncoded = encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 		}
 		t.Logf("Phase 3: Got %d variant outputs (expected ~120)", phase3Variants)
 		t.Logf("Phase 3: Saw dyn-h264 output: %v", seenDynH264)
@@ -164,6 +177,7 @@ func TestDynamicVariantTiming(t *testing.T) {
 		t.Fatalf("Failed to create source encoder: %v", err)
 	}
 	defer srcEncoder.Close()
+	srcEncodeBuf := make([]byte, srcEncoder.MaxEncodedSize())
 
 	mt, err := NewMultiTranscoder(MultiTranscoderConfig{
 		InputCodec: VideoCodecVP8,
@@ -185,19 +199,19 @@ func TestDynamicVariantTiming(t *testing.T) {
 	}
 
 	srcEncoder.RequestKeyframe()
-	srcEncoded, _ := srcEncoder.Encode(rawFrame)
+	srcEncoded := encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 
 	// Warm up
 	for i := 0; i < 10; i++ {
 		mt.Transcode(srcEncoded)
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 	}
 
 	// Measure time with 1 variant
 	start := time.Now()
 	for i := 0; i < 30; i++ {
 		mt.Transcode(srcEncoded)
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 	}
 	time1 := time.Since(start)
 	t.Logf("1 variant: %v (%.2fms/frame)", time1, float64(time1.Milliseconds())/30)
@@ -216,7 +230,7 @@ func TestDynamicVariantTiming(t *testing.T) {
 	start = time.Now()
 	for i := 0; i < 30; i++ {
 		mt.Transcode(srcEncoded)
-		srcEncoded, _ = srcEncoder.Encode(rawFrame)
+		srcEncoded = encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 	}
 	time2 := time.Since(start)
 	t.Logf("2 variants: %v (%.2fms/frame)", time2, float64(time2.Milliseconds())/30)
@@ -236,7 +250,7 @@ func TestDynamicVariantTiming(t *testing.T) {
 		start = time.Now()
 		for i := 0; i < 30; i++ {
 			mt.Transcode(srcEncoded)
-			srcEncoded, _ = srcEncoder.Encode(rawFrame)
+			srcEncoded = encodeFrame(t, srcEncoder, rawFrame, srcEncodeBuf)
 		}
 		time3 := time.Since(start)
 		t.Logf("3 variants: %v (%.2fms/frame)", time3, float64(time3.Milliseconds())/30)

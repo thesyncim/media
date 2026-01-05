@@ -12,6 +12,7 @@ var (
 	ErrBufferTooSmall    = errors.New("buffer too small")
 	ErrProviderNotFound  = errors.New("provider not available")
 	ErrCodecNotSupported = errors.New("codec not supported by provider")
+	ErrInvalidConfig     = errors.New("invalid configuration")
 )
 
 // VideoEncoderConfig configures a video encoder.
@@ -24,15 +25,14 @@ type VideoEncoderConfig struct {
 	FPS        int // Target framerate
 	BitrateBps int // Target bitrate in bits per second
 
-	MaxBitrateBps    int             // Maximum bitrate (0 = no limit)
-	MinBitrateBps    int             // Minimum bitrate (0 = no limit)
-	KeyframeInterval int             // Deprecated: use RequestKeyframe() for PLI
-	RateControlMode  RateControlMode // Rate control mode
-	Threads          int             // Encoder threads (0 = auto)
-	Quality          int             // Quality level (codec-specific, 0-63 for VP8/VP9)
-	PayloadType      uint8           // RTP payload type
+	MaxBitrateBps   int             // Maximum bitrate (0 = no limit)
+	MinBitrateBps   int             // Minimum bitrate (0 = no limit)
+	RateControlMode RateControlMode // Rate control mode
+	Threads         int             // Encoder threads (0 = auto)
+	Quality         int             // Quality level (codec-specific, 0-63 for VP8/VP9)
+	PayloadType     uint8           // RTP payload type
 
-	// Codec-specific options
+	// Codec-specific options (prefer codec-specific config types)
 	H264Profile H264Profile // H.264 profile
 	VP9Profile  VP9Profile  // VP9 profile
 	AV1Profile  AV1Profile  // AV1 profile
@@ -42,22 +42,76 @@ type VideoEncoderConfig struct {
 	SpatialLayers  int // Number of spatial layers (1-3)
 }
 
+// H264EncoderConfig configures an H.264 encoder.
+type H264EncoderConfig struct {
+	VideoEncoderConfig
+	Profile H264Profile
+}
+
+// ToVideoEncoderConfig converts to the generic config type.
+func (c H264EncoderConfig) ToVideoEncoderConfig() VideoEncoderConfig {
+	cfg := c.VideoEncoderConfig
+	cfg.Codec = VideoCodecH264
+	cfg.H264Profile = c.Profile
+	return cfg
+}
+
+// VP8EncoderConfig configures a VP8 encoder.
+type VP8EncoderConfig struct {
+	VideoEncoderConfig
+}
+
+// ToVideoEncoderConfig converts to the generic config type.
+func (c VP8EncoderConfig) ToVideoEncoderConfig() VideoEncoderConfig {
+	cfg := c.VideoEncoderConfig
+	cfg.Codec = VideoCodecVP8
+	return cfg
+}
+
+// VP9EncoderConfig configures a VP9 encoder.
+type VP9EncoderConfig struct {
+	VideoEncoderConfig
+	Profile VP9Profile
+}
+
+// ToVideoEncoderConfig converts to the generic config type.
+func (c VP9EncoderConfig) ToVideoEncoderConfig() VideoEncoderConfig {
+	cfg := c.VideoEncoderConfig
+	cfg.Codec = VideoCodecVP9
+	cfg.VP9Profile = c.Profile
+	return cfg
+}
+
+// AV1EncoderConfig configures an AV1 encoder.
+type AV1EncoderConfig struct {
+	VideoEncoderConfig
+	Profile AV1Profile
+	Usage   int // 0=realtime, 1=good, 2=best
+}
+
+// ToVideoEncoderConfig converts to the generic config type.
+func (c AV1EncoderConfig) ToVideoEncoderConfig() VideoEncoderConfig {
+	cfg := c.VideoEncoderConfig
+	cfg.Codec = VideoCodecAV1
+	cfg.AV1Profile = c.Profile
+	return cfg
+}
+
 // DefaultVideoEncoderConfig returns a default encoder configuration.
 func DefaultVideoEncoderConfig(codec VideoCodec, width, height int) VideoEncoderConfig {
 	return VideoEncoderConfig{
-		Codec:            codec,
-		Provider:         ProviderAuto,
-		Width:            width,
-		Height:           height,
-		FPS:              30,
-		BitrateBps:       1500000, // 1.5 Mbps
-		KeyframeInterval: 0,       // Disabled; use RequestKeyframe()
-		RateControlMode:  RateControlVBR,
-		Threads:          0, // Auto
-		Quality:          32,
-		PayloadType:      codec.DefaultPayloadType(),
-		TemporalLayers:   1,
-		SpatialLayers:    1,
+		Codec:           codec,
+		Provider:        ProviderAuto,
+		Width:           width,
+		Height:          height,
+		FPS:             30,
+		BitrateBps:      1500000, // 1.5 Mbps
+		RateControlMode: RateControlVBR,
+		Threads:         0, // Auto
+		Quality:         32,
+		PayloadType:     codec.DefaultPayloadType(),
+		TemporalLayers:  1,
+		SpatialLayers:   1,
 	}
 }
 
@@ -85,17 +139,13 @@ type EncodeResult struct {
 type VideoEncoder interface {
 	io.Closer
 
-	// Encode encodes a video frame.
-	// Returns nil if the encoder is buffering and no output is ready.
-	// The returned EncodedFrame data is valid until the next Encode() call.
-	Encode(frame *VideoFrame) (*EncodedFrame, error)
-
-	// EncodeInto encodes directly into the provided buffer.
+	// Encode encodes a video frame into the provided buffer.
 	// Returns ErrBufferTooSmall if buf is insufficient (use MaxEncodedSize).
-	// This is the zero-allocation path for performance-critical code.
-	EncodeInto(frame *VideoFrame, buf []byte) (EncodeResult, error)
+	// Returns EncodeResult with N=0 if the encoder is buffering.
+	Encode(frame *VideoFrame, buf []byte) (EncodeResult, error)
 
 	// MaxEncodedSize returns the maximum possible encoded size.
+	// Use this to allocate the buffer for Encode().
 	MaxEncodedSize() int
 
 	// RequestKeyframe forces the next frame to be a keyframe.
@@ -106,7 +156,6 @@ type VideoEncoder interface {
 
 	// SetResolution updates the encoding resolution dynamically.
 	// Returns ErrNotSupported if the provider doesn't support dynamic resolution.
-	// Check Provider().Features().Has(FeatureDynamicResolution) before calling.
 	SetResolution(width, height int) error
 
 	// Provider returns which provider created this encoder.
@@ -136,11 +185,25 @@ type AudioEncoderConfig struct {
 	FrameSizeMs int   // Frame size in milliseconds
 	PayloadType uint8 // RTP payload type
 
-	// Opus-specific options
+	// Opus-specific options (prefer OpusEncoderConfig for type safety)
 	DTX         bool // Enable discontinuous transmission
 	FEC         bool // Enable forward error correction
 	Application int  // Opus application (0=VOIP, 1=Audio, 2=LowDelay)
 	Complexity  int  // Opus complexity (0-10)
+}
+
+// OpusEncoderConfig configures an Opus encoder.
+// OpusApplication constants are defined in opus_purego.go:
+// OpusApplicationVOIP, OpusApplicationAudio, OpusApplicationLowDelay
+type OpusEncoderConfig struct {
+	AudioEncoderConfig
+}
+
+// ToAudioEncoderConfig converts to the generic config type.
+func (c OpusEncoderConfig) ToAudioEncoderConfig() AudioEncoderConfig {
+	cfg := c.AudioEncoderConfig
+	cfg.Codec = AudioCodecOpus
+	return cfg
 }
 
 // DefaultAudioEncoderConfig returns a default audio encoder configuration.
@@ -155,7 +218,7 @@ func DefaultAudioEncoderConfig(codec AudioCodec) AudioEncoderConfig {
 		PayloadType: codec.DefaultPayloadType(),
 		DTX:         true,
 		FEC:         true,
-		Application: 0,
+		Application: 0, // VOIP (see OpusApplicationVOIP)
 		Complexity:  10,
 	}
 }

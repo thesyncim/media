@@ -20,6 +20,7 @@ func TestH264EncoderDecoderRoundtrip(t *testing.T) {
 		t.Fatalf("Failed to create H264 encoder: %v", err)
 	}
 	defer enc.Close()
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	// Create decoder
 	dec, err := NewH264Decoder(VideoDecoderConfig{})
@@ -49,17 +50,20 @@ func TestH264EncoderDecoderRoundtrip(t *testing.T) {
 	}
 
 	// Encode several frames (decoder needs multiple frames to warm up)
-	var encoded *EncodedFrame
 	var lastEncoded *EncodedFrame
 	enc.RequestKeyframe()
 
 	for i := 0; i < 30; i++ {
-		encoded, err = enc.Encode(rawFrame)
+		result, err := enc.Encode(rawFrame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode failed at frame %d: %v", i, err)
 		}
-		if encoded != nil && len(encoded.Data) > 0 {
-			lastEncoded = encoded
+		if result.N > 0 {
+			lastEncoded = &EncodedFrame{
+				Data:      make([]byte, result.N),
+				FrameType: result.FrameType,
+			}
+			copy(lastEncoded.Data, encodeBuf[:result.N])
 		}
 	}
 
@@ -71,13 +75,18 @@ func TestH264EncoderDecoderRoundtrip(t *testing.T) {
 	// Try to decode - the fix should prevent "stride=0/0, size=0x0" errors
 	// H264 decoder often needs a keyframe to produce output
 	enc.RequestKeyframe()
-	encoded, err = enc.Encode(rawFrame)
+	result, err := enc.Encode(rawFrame, encodeBuf)
 	if err != nil {
 		t.Fatalf("Encode keyframe failed: %v", err)
 	}
-	if encoded == nil || len(encoded.Data) == 0 {
+	if result.N == 0 {
 		t.Fatal("Encoder produced no keyframe output")
 	}
+	encoded := &EncodedFrame{
+		Data:      make([]byte, result.N),
+		FrameType: result.FrameType,
+	}
+	copy(encoded.Data, encodeBuf[:result.N])
 
 	t.Logf("Keyframe: %d bytes", len(encoded.Data))
 
@@ -90,13 +99,18 @@ func TestH264EncoderDecoderRoundtrip(t *testing.T) {
 	// First decode may return nil (buffering), keep feeding frames
 	frameCount := 0
 	for i := 0; i < 30 && decoded == nil; i++ {
-		encoded, err = enc.Encode(rawFrame)
+		result, err = enc.Encode(rawFrame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode failed: %v", err)
 		}
-		if encoded == nil {
+		if result.N == 0 {
 			continue
 		}
+		encoded = &EncodedFrame{
+			Data:      make([]byte, result.N),
+			FrameType: result.FrameType,
+		}
+		copy(encoded.Data, encodeBuf[:result.N])
 		decoded, err = dec.Decode(encoded)
 		if err != nil {
 			t.Fatalf("Decode failed at iteration %d: %v", i, err)

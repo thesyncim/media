@@ -255,7 +255,7 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	}
 
 	// Discard late-arriving packets for already completed frames
-	if d.hasCompletedFrame && isTimestampOlderH264(pkt.Header.Timestamp, d.lastCompletedTs) {
+	if d.hasCompletedFrame && IsRTPTimestampOlder(pkt.Header.Timestamp, d.lastCompletedTs) {
 		return nil, nil
 	}
 
@@ -341,14 +341,6 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	return nil, nil
 }
 
-// isTimestampOlderH264 returns true if ts1 is older than or equal to ts2, handling 32-bit wraparound.
-func isTimestampOlderH264(ts1, ts2 uint32) bool {
-	if ts1 == ts2 {
-		return true
-	}
-	diff := ts2 - ts1
-	return diff < 0x80000000
-}
 
 func (d *H264Depacketizer) depacketizeSTAPA(payload []byte) error {
 	// Skip STAP-A header

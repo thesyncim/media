@@ -655,6 +655,7 @@ func testPassthroughWithTranscode(t *testing.T, srcCodec VideoCodec, srcName str
 		t.Fatalf("failed to create source encoder: %v", err)
 	}
 	defer srcEncoder.Close()
+	srcEncodeBuf := make([]byte, srcEncoder.MaxEncodedSize())
 
 	outputCounts := make(map[string]int)
 	totalBytes := make(map[string]int)
@@ -671,30 +672,41 @@ func testPassthroughWithTranscode(t *testing.T, srcCodec VideoCodec, srcName str
 		}
 
 		// Encode to source codec
-		srcFrame, err := srcEncoder.Encode(raw)
+		result, err := srcEncoder.Encode(raw, srcEncodeBuf)
 		if err != nil {
 			continue
 		}
-		if srcFrame == nil {
+		if result.N == 0 {
 			continue
+		}
+		srcFrame := &EncodedFrame{
+			Data:      srcEncodeBuf[:result.N],
+			FrameType: result.FrameType,
 		}
 
 		// Transcode through multi-transcoder
-		result, err := mt.Transcode(srcFrame)
+		mtResult, err := mt.Transcode(srcFrame)
 		if err != nil {
 			t.Fatalf("transcode failed at frame %d: %v", i, err)
 		}
 
-		if result != nil {
-			for _, v := range result.Variants {
+		if mtResult != nil {
+			for _, v := range mtResult.Variants {
 				if v.Frame != nil {
 					outputCounts[v.VariantID]++
 					totalBytes[v.VariantID] += len(v.Frame.Data)
 
+					// Copy frame data since passthrough may return shared buffer
+					frameCopy := &EncodedFrame{
+						Data:      make([]byte, len(v.Frame.Data)),
+						FrameType: v.Frame.FrameType,
+						Timestamp: v.Frame.Timestamp,
+					}
+					copy(frameCopy.Data, v.Frame.Data)
 					if v.VariantID == "passthrough" {
-						passthroughFrames = append(passthroughFrames, v.Frame)
+						passthroughFrames = append(passthroughFrames, frameCopy)
 					} else {
-						transcodeFrames[v.VariantID] = append(transcodeFrames[v.VariantID], v.Frame)
+						transcodeFrames[v.VariantID] = append(transcodeFrames[v.VariantID], frameCopy)
 					}
 				}
 			}
@@ -844,6 +856,7 @@ func testPassthroughPlusSingleTranscode(t *testing.T, srcCodec, dstCodec VideoCo
 		t.Fatalf("failed to create source encoder: %v", err)
 	}
 	defer srcEncoder.Close()
+	srcEncodeBuf := make([]byte, srcEncoder.MaxEncodedSize())
 
 	var passthroughFrames, transcodeFrames []*EncodedFrame
 	passthroughBytes, transcodeBytes := 0, 0
@@ -853,26 +866,37 @@ func testPassthroughPlusSingleTranscode(t *testing.T, srcCodec, dstCodec VideoCo
 		if i == 0 {
 			srcEncoder.RequestKeyframe()
 		}
-		srcFrame, err := srcEncoder.Encode(raw)
-		if err != nil || srcFrame == nil {
+		result, err := srcEncoder.Encode(raw, srcEncodeBuf)
+		if err != nil || result.N == 0 {
 			continue
 		}
+		srcFrame := &EncodedFrame{
+			Data:      srcEncodeBuf[:result.N],
+			FrameType: result.FrameType,
+		}
 
-		result, err := mt.Transcode(srcFrame)
+		mtResult, err := mt.Transcode(srcFrame)
 		if err != nil {
 			t.Fatalf("transcode failed: %v", err)
 		}
 
-		if result != nil {
-			for _, v := range result.Variants {
+		if mtResult != nil {
+			for _, v := range mtResult.Variants {
 				if v.Frame == nil {
 					continue
 				}
+				// Copy frame data since passthrough may return shared buffer
+				frameCopy := &EncodedFrame{
+					Data:      make([]byte, len(v.Frame.Data)),
+					FrameType: v.Frame.FrameType,
+					Timestamp: v.Frame.Timestamp,
+				}
+				copy(frameCopy.Data, v.Frame.Data)
 				if v.VariantID == "passthrough" {
-					passthroughFrames = append(passthroughFrames, v.Frame)
+					passthroughFrames = append(passthroughFrames, frameCopy)
 					passthroughBytes += len(v.Frame.Data)
 				} else {
-					transcodeFrames = append(transcodeFrames, v.Frame)
+					transcodeFrames = append(transcodeFrames, frameCopy)
 					transcodeBytes += len(v.Frame.Data)
 				}
 			}
@@ -967,6 +991,7 @@ func testSingleCodecPassthrough(t *testing.T, codec VideoCodec) {
 		t.Fatalf("failed to create encoder: %v", err)
 	}
 	defer enc.Close()
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	var outputFrames []*EncodedFrame
 	totalBytes := 0
@@ -976,20 +1001,31 @@ func testSingleCodecPassthrough(t *testing.T, codec VideoCodec) {
 		if i == 0 {
 			enc.RequestKeyframe()
 		}
-		srcFrame, err := enc.Encode(raw)
-		if err != nil || srcFrame == nil {
+		result, err := enc.Encode(raw, encodeBuf)
+		if err != nil || result.N == 0 {
 			continue
 		}
+		srcFrame := &EncodedFrame{
+			Data:      encodeBuf[:result.N],
+			FrameType: result.FrameType,
+		}
 
-		result, err := mt.Transcode(srcFrame)
+		mtResult, err := mt.Transcode(srcFrame)
 		if err != nil {
 			t.Fatalf("passthrough failed: %v", err)
 		}
 
-		if result != nil {
-			for _, v := range result.Variants {
+		if mtResult != nil {
+			for _, v := range mtResult.Variants {
 				if v.Frame != nil {
-					outputFrames = append(outputFrames, v.Frame)
+					// Copy frame data since passthrough returns shared buffer
+					frameCopy := &EncodedFrame{
+						Data:      make([]byte, len(v.Frame.Data)),
+						FrameType: v.Frame.FrameType,
+						Timestamp: v.Frame.Timestamp,
+					}
+					copy(frameCopy.Data, v.Frame.Data)
+					outputFrames = append(outputFrames, frameCopy)
 					totalBytes += len(v.Frame.Data)
 
 					// Passthrough should preserve exact bytes
@@ -1055,15 +1091,20 @@ func TestTimestampPropagationSingleTranscoder(t *testing.T) {
 		t.Fatalf("failed to create source encoder: %v", err)
 	}
 	defer srcEnc.Close()
+	srcEncodeBuf := make([]byte, srcEnc.MaxEncodedSize())
 
 	// Generate test frames with specific timestamps
 	srcEnc.RequestKeyframe()
 
 	for i := 0; i < 30; i++ {
 		raw := createColorTestFrame(width, height, i)
-		srcFrame, err := srcEnc.Encode(raw)
-		if err != nil || srcFrame == nil {
+		result, err := srcEnc.Encode(raw, srcEncodeBuf)
+		if err != nil || result.N == 0 {
 			continue
+		}
+		srcFrame := &EncodedFrame{
+			Data:      srcEncodeBuf[:result.N],
+			FrameType: result.FrameType,
 		}
 
 		// Set a specific timestamp that we can verify
@@ -1128,6 +1169,7 @@ func TestTimestampPropagationMultiTranscoder(t *testing.T) {
 		t.Fatalf("failed to create source encoder: %v", err)
 	}
 	defer srcEnc.Close()
+	srcEncodeBuf := make([]byte, srcEnc.MaxEncodedSize())
 
 	srcEnc.RequestKeyframe()
 
@@ -1135,9 +1177,13 @@ func TestTimestampPropagationMultiTranscoder(t *testing.T) {
 
 	for i := 0; i < 30; i++ {
 		raw := createColorTestFrame(width, height, i)
-		srcFrame, err := srcEnc.Encode(raw)
-		if err != nil || srcFrame == nil {
+		result, err := srcEnc.Encode(raw, srcEncodeBuf)
+		if err != nil || result.N == 0 {
 			continue
+		}
+		srcFrame := &EncodedFrame{
+			Data:      srcEncodeBuf[:result.N],
+			FrameType: result.FrameType,
 		}
 
 		// Set a specific timestamp
@@ -1145,16 +1191,16 @@ func TestTimestampPropagationMultiTranscoder(t *testing.T) {
 		srcFrame.Timestamp = expectedTs
 
 		// Transcode
-		result, err := mt.Transcode(srcFrame)
+		mtResult, err := mt.Transcode(srcFrame)
 		if err != nil {
 			t.Fatalf("transcode failed: %v", err)
 		}
-		if result == nil {
+		if mtResult == nil {
 			continue
 		}
 
 		// Verify all variants have the same timestamp
-		for _, v := range result.Variants {
+		for _, v := range mtResult.Variants {
 			if v.Frame == nil {
 				continue
 			}
@@ -1213,15 +1259,20 @@ func TestTimestampPropagationDynamicOutput(t *testing.T) {
 		t.Fatalf("failed to create source encoder: %v", err)
 	}
 	defer srcEnc.Close()
+	srcEncodeBuf := make([]byte, srcEnc.MaxEncodedSize())
 
 	srcEnc.RequestKeyframe()
 
 	// Send some frames first
 	for i := 0; i < 10; i++ {
 		raw := createColorTestFrame(width, height, i)
-		srcFrame, _ := srcEnc.Encode(raw)
-		if srcFrame != nil {
-			srcFrame.Timestamp = uint32((i + 1) * 3000)
+		result, _ := srcEnc.Encode(raw, srcEncodeBuf)
+		if result.N > 0 {
+			srcFrame := &EncodedFrame{
+				Data:      srcEncodeBuf[:result.N],
+				FrameType: result.FrameType,
+				Timestamp: uint32((i + 1) * 3000),
+			}
 			mt.Transcode(srcFrame)
 		}
 	}
@@ -1244,24 +1295,28 @@ func TestTimestampPropagationDynamicOutput(t *testing.T) {
 
 	for i := 10; i < 40; i++ {
 		raw := createColorTestFrame(width, height, i)
-		srcFrame, err := srcEnc.Encode(raw)
-		if err != nil || srcFrame == nil {
+		encResult, err := srcEnc.Encode(raw, srcEncodeBuf)
+		if err != nil || encResult.N == 0 {
 			continue
+		}
+		srcFrame := &EncodedFrame{
+			Data:      srcEncodeBuf[:encResult.N],
+			FrameType: encResult.FrameType,
 		}
 
 		// Set a specific timestamp - use large values to simulate ongoing stream
 		expectedTs := uint32((i + 1) * 3000)
 		srcFrame.Timestamp = expectedTs
 
-		result, err := mt.Transcode(srcFrame)
+		mtResult, err := mt.Transcode(srcFrame)
 		if err != nil {
 			t.Fatalf("transcode failed: %v", err)
 		}
-		if result == nil {
+		if mtResult == nil {
 			continue
 		}
 
-		for _, v := range result.Variants {
+		for _, v := range mtResult.Variants {
 			if v.Frame == nil {
 				continue
 			}

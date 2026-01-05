@@ -63,20 +63,18 @@ func TestVP8Encoder(t *testing.T) {
 
 	// Encode a frame
 	frame := createTestFrame(320, 240)
-	encoded, err := enc.Encode(frame)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
+	result, err := enc.Encode(frame, encodeBuf)
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
-	if encoded == nil {
-		t.Fatal("Encode returned nil frame")
+	if result.N == 0 {
+		t.Fatal("Encode returned no data")
 	}
 
 	// First frame should be a keyframe
-	if encoded.FrameType != FrameTypeKey {
-		t.Errorf("First frame type = %v, want Key", encoded.FrameType)
-	}
-	if len(encoded.Data) == 0 {
-		t.Error("Encoded data is empty")
+	if result.FrameType != FrameTypeKey {
+		t.Errorf("First frame type = %v, want Key", result.FrameType)
 	}
 
 	// Check stats
@@ -128,9 +126,14 @@ func TestVP8RoundTrip(t *testing.T) {
 
 	// Create and encode a frame
 	frame := createTestFrame(320, 240)
-	encoded, err := enc.Encode(frame)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
+	result, err := enc.Encode(frame, encodeBuf)
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
+	}
+	encoded := &EncodedFrame{
+		Data:      encodeBuf[:result.N],
+		FrameType: result.FrameType,
 	}
 
 	// Decode the encoded frame
@@ -166,11 +169,10 @@ func TestVP8RoundTrip(t *testing.T) {
 // TestVP8KeyframeRequest tests keyframe request functionality.
 func TestVP8KeyframeRequest(t *testing.T) {
 	config := VideoEncoderConfig{
-		Width:            320,
-		Height:           240,
-		FPS:              30,
-		BitrateBps:       500000,
-		KeyframeInterval: 300, // Very large to ensure delta frames normally
+		Width:      320,
+		Height:     240,
+		FPS:        30,
+		BitrateBps: 500000,
 	}
 
 	enc, err := NewVP8Encoder(config)
@@ -180,20 +182,21 @@ func TestVP8KeyframeRequest(t *testing.T) {
 	defer enc.Close()
 
 	frame := createTestFrame(320, 240)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	// First frame is always keyframe
-	_, err = enc.Encode(frame)
+	_, err = enc.Encode(frame, encodeBuf)
 	if err != nil {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
 	// Encode a few delta frames
 	for i := 0; i < 3; i++ {
-		encoded, err := enc.Encode(frame)
+		result, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode %d failed: %v", i, err)
 		}
-		if encoded.FrameType != FrameTypeDelta {
+		if result.FrameType != FrameTypeDelta {
 			t.Logf("Frame %d is not delta (may be normal for short sequences)", i)
 		}
 	}
@@ -202,12 +205,12 @@ func TestVP8KeyframeRequest(t *testing.T) {
 	enc.RequestKeyframe()
 
 	// Next frame should be keyframe
-	encoded, err := enc.Encode(frame)
+	result, err := enc.Encode(frame, encodeBuf)
 	if err != nil {
 		t.Fatalf("Encode after keyframe request failed: %v", err)
 	}
-	if encoded.FrameType != FrameTypeKey {
-		t.Errorf("Frame after keyframe request = %v, want Key", encoded.FrameType)
+	if result.FrameType != FrameTypeKey {
+		t.Errorf("Frame after keyframe request = %v, want Key", result.FrameType)
 	}
 }
 
@@ -238,7 +241,8 @@ func TestVP8BitrateChange(t *testing.T) {
 
 	// Encode a frame with new bitrate
 	frame := createTestFrame(320, 240)
-	_, err = enc.Encode(frame)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
+	_, err = enc.Encode(frame, encodeBuf)
 	if err != nil {
 		t.Fatalf("Encode after bitrate change failed: %v", err)
 	}
@@ -264,31 +268,34 @@ func TestVP9Encoder(t *testing.T) {
 		t.Errorf("Codec = %v, want VP9", enc.Codec())
 	}
 
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
+
 	// Encode multiple frames (VP9 buffers more aggressively)
-	var encoded *EncodedFrame
+	var result EncodeResult
+	var gotOutput bool
 	for i := 0; i < 30; i++ {
 		frame := createTestFrame(320, 240)
-		var err error
-		encoded, err = enc.Encode(frame)
+		result, err = enc.Encode(frame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode failed: %v", err)
 		}
-		if encoded != nil {
+		if result.N > 0 {
+			gotOutput = true
 			break
 		}
 	}
-	if encoded == nil {
+	if !gotOutput {
 		// Check if any frames were encoded via stats
 		stats := enc.Stats()
 		if stats.FramesEncoded == 0 {
-			t.Fatal("Encode returned nil frame after multiple attempts and no frames encoded")
+			t.Fatal("Encode returned no data after multiple attempts and no frames encoded")
 		}
 		t.Skipf("VP9 encoder buffering all frames (encoded %d internally)", stats.FramesEncoded)
 	}
 
 	// First non-nil frame should be a keyframe
-	if encoded.FrameType != FrameTypeKey {
-		t.Errorf("First frame type = %v, want Key", encoded.FrameType)
+	if result.FrameType != FrameTypeKey {
+		t.Errorf("First frame type = %v, want Key", result.FrameType)
 	}
 
 	// Check stats
@@ -335,16 +342,21 @@ func TestVP9RoundTrip(t *testing.T) {
 	}
 	defer dec.Close()
 
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
+
 	// Create and encode frames (VP9 buffers more aggressively)
 	var encoded *EncodedFrame
 	for i := 0; i < 30; i++ {
 		frame := createTestFrame(320, 240)
-		var err error
-		encoded, err = enc.Encode(frame)
+		result, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode failed: %v", err)
 		}
-		if encoded != nil {
+		if result.N > 0 {
+			encoded = &EncodedFrame{
+				Data:      encodeBuf[:result.N],
+				FrameType: result.FrameType,
+			}
 			break
 		}
 	}
@@ -370,11 +382,10 @@ func TestVP9RoundTrip(t *testing.T) {
 // TestVP9KeyframeRequest tests keyframe request functionality.
 func TestVP9KeyframeRequest(t *testing.T) {
 	config := VideoEncoderConfig{
-		Width:            320,
-		Height:           240,
-		FPS:              30,
-		BitrateBps:       500000,
-		KeyframeInterval: 300, // Very long to avoid auto keyframes
+		Width:      320,
+		Height:     240,
+		FPS:        30,
+		BitrateBps: 500000,
 	}
 
 	enc, err := NewVP9Encoder(config)
@@ -384,16 +395,17 @@ func TestVP9KeyframeRequest(t *testing.T) {
 	defer enc.Close()
 
 	frame := createTestFrame(320, 240)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	// Get initial keyframe count after first frame (always a keyframe)
-	_, err = enc.Encode(frame)
+	_, err = enc.Encode(frame, encodeBuf)
 	if err != nil {
 		t.Fatalf("First encode failed: %v", err)
 	}
 
 	// Encode enough frames to flush any buffering
 	for i := 0; i < 30; i++ {
-		_, err := enc.Encode(frame)
+		_, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode %d failed: %v", i, err)
 		}
@@ -410,7 +422,7 @@ func TestVP9KeyframeRequest(t *testing.T) {
 	// Encode more frames to ensure the keyframe request is processed
 	// VP9 may buffer, so we need to encode many frames
 	for i := 0; i < 60; i++ {
-		_, err := enc.Encode(frame)
+		_, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode after keyframe request failed: %v", err)
 		}
@@ -451,7 +463,8 @@ func TestVP9BitrateChange(t *testing.T) {
 
 	// Encode a frame with new bitrate
 	frame := createTestFrame(320, 240)
-	_, err = enc.Encode(frame)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
+	_, err = enc.Encode(frame, encodeBuf)
 	if err != nil {
 		t.Fatalf("Encode after bitrate change failed: %v", err)
 	}
@@ -540,12 +553,17 @@ func TestMultipleFrames(t *testing.T) {
 	defer dec.Close()
 
 	frame := createTestFrame(320, 240)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	// Encode and decode 30 frames
 	for i := 0; i < 30; i++ {
-		encoded, err := enc.Encode(frame)
+		result, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			t.Fatalf("Encode frame %d failed: %v", i, err)
+		}
+		encoded := &EncodedFrame{
+			Data:      encodeBuf[:result.N],
+			FrameType: result.FrameType,
 		}
 
 		decoded, err := dec.Decode(encoded)
@@ -583,12 +601,13 @@ func BenchmarkVP8Encode(b *testing.B) {
 	defer enc.Close()
 
 	frame := createTestFrame(1280, 720)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := enc.Encode(frame)
+		_, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			b.Fatalf("Encode failed: %v", err)
 		}
@@ -615,21 +634,21 @@ func BenchmarkVP8Decode(b *testing.B) {
 	defer dec.Close()
 
 	frame := createTestFrame(1280, 720)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	// Pre-encode some frames
 	var encodedFrames []*EncodedFrame
 	for i := 0; i < 30; i++ {
-		encoded, err := enc.Encode(frame)
+		result, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			b.Fatalf("Encode failed: %v", err)
 		}
 		// Clone the encoded data since it's reused
 		cloned := &EncodedFrame{
-			Data:      make([]byte, len(encoded.Data)),
-			FrameType: encoded.FrameType,
-			Timestamp: encoded.Timestamp,
+			Data:      make([]byte, result.N),
+			FrameType: result.FrameType,
 		}
-		copy(cloned.Data, encoded.Data)
+		copy(cloned.Data, encodeBuf[:result.N])
 		encodedFrames = append(encodedFrames, cloned)
 	}
 
@@ -660,12 +679,13 @@ func BenchmarkVP9Encode(b *testing.B) {
 	defer enc.Close()
 
 	frame := createTestFrame(1280, 720)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := enc.Encode(frame)
+		_, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			b.Fatalf("Encode failed: %v", err)
 		}
@@ -692,24 +712,24 @@ func BenchmarkVP9Decode(b *testing.B) {
 	defer dec.Close()
 
 	frame := createTestFrame(1280, 720)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	// Pre-encode some frames (encoder may buffer initial frames)
 	var encodedFrames []*EncodedFrame
 	for i := 0; i < 60; i++ { // Encode more frames to ensure we get output
-		encoded, err := enc.Encode(frame)
+		result, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			b.Fatalf("Encode failed: %v", err)
 		}
-		if encoded == nil {
+		if result.N == 0 {
 			continue // Encoder is buffering
 		}
 		// Clone the encoded data since it's reused
 		cloned := &EncodedFrame{
-			Data:      make([]byte, len(encoded.Data)),
-			FrameType: encoded.FrameType,
-			Timestamp: encoded.Timestamp,
+			Data:      make([]byte, result.N),
+			FrameType: result.FrameType,
 		}
-		copy(cloned.Data, encoded.Data)
+		copy(cloned.Data, encodeBuf[:result.N])
 		encodedFrames = append(encodedFrames, cloned)
 	}
 
@@ -749,14 +769,19 @@ func BenchmarkVP8RoundTrip(b *testing.B) {
 	defer dec.Close()
 
 	frame := createTestFrame(1280, 720)
+	encodeBuf := make([]byte, enc.MaxEncodedSize())
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		encoded, err := enc.Encode(frame)
+		result, err := enc.Encode(frame, encodeBuf)
 		if err != nil {
 			b.Fatalf("Encode failed: %v", err)
+		}
+		encoded := &EncodedFrame{
+			Data:      encodeBuf[:result.N],
+			FrameType: result.FrameType,
 		}
 		_, err = dec.Decode(encoded)
 		if err != nil {

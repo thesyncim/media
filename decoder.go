@@ -8,7 +8,9 @@ import (
 
 // VideoDecoderConfig configures a video decoder.
 type VideoDecoderConfig struct {
-	Codec        VideoCodec  // Codec type (VP8, VP9, H264, AV1)
+	Codec    VideoCodec // Codec type (VP8, VP9, H264, AV1)
+	Provider Provider   // Provider to use (ProviderAuto = library chooses)
+
 	Width        int         // Expected frame width (0 = detect from stream)
 	Height       int         // Expected frame height (0 = detect from stream)
 	OutputFormat PixelFormat // Desired output pixel format
@@ -22,6 +24,7 @@ type VideoDecoderConfig struct {
 func DefaultVideoDecoderConfig(codec VideoCodec) VideoDecoderConfig {
 	return VideoDecoderConfig{
 		Codec:            codec,
+		Provider:         ProviderAuto,
 		OutputFormat:     PixelFormatI420,
 		Threads:          0, // Auto
 		ErrorConcealment: true,
@@ -38,6 +41,14 @@ type DecoderStats struct {
 	DecodingTimeUs   uint64 // Total decoding time in microseconds
 }
 
+// DecodeResult contains the result of a decode operation.
+type DecodeResult struct {
+	Width     int       // Decoded frame width
+	Height    int       // Decoded frame height
+	FrameType FrameType // Key or Delta
+	PTS       int64     // Presentation timestamp
+}
+
 // VideoDecoder decodes compressed video to raw frames.
 type VideoDecoder interface {
 	io.Closer
@@ -47,10 +58,18 @@ type VideoDecoder interface {
 	// The returned VideoFrame data is valid until the next Decode() call.
 	Decode(encoded *EncodedFrame) (*VideoFrame, error)
 
+	// DecodeInto decodes directly into the provided frame buffer.
+	// This is the zero-allocation path for performance-critical code.
+	// The frame's Data buffers must be pre-allocated with sufficient size.
+	DecodeInto(encoded *EncodedFrame, frame *VideoFrame) (DecodeResult, error)
+
 	// DecodeRTP decodes from RTP packet data (depacketizes and decodes).
 	// This is a convenience method that combines depacketization and decoding.
 	// The data should be the raw RTP payload (without RTP header).
 	DecodeRTP(data []byte, marker bool, timestamp uint32) (*VideoFrame, error)
+
+	// Provider returns which provider created this decoder.
+	Provider() Provider
 
 	// Config returns the decoder configuration.
 	Config() VideoDecoderConfig
@@ -74,7 +93,9 @@ type VideoDecoder interface {
 
 // AudioDecoderConfig configures an audio decoder.
 type AudioDecoderConfig struct {
-	Codec        AudioCodec  // Codec type (Opus, etc.)
+	Codec    AudioCodec // Codec type (Opus, etc.)
+	Provider Provider   // Provider to use (ProviderAuto = library chooses)
+
 	SampleRate   int         // Output sample rate (0 = native)
 	Channels     int         // Output channels (0 = native)
 	OutputFormat AudioFormat // Desired output format
@@ -84,6 +105,7 @@ type AudioDecoderConfig struct {
 func DefaultAudioDecoderConfig(codec AudioCodec) AudioDecoderConfig {
 	return AudioDecoderConfig{
 		Codec:        codec,
+		Provider:     ProviderAuto,
 		SampleRate:   48000,
 		Channels:     2,
 		OutputFormat: AudioFormatS16,
@@ -111,6 +133,9 @@ type AudioDecoder interface {
 	// If data is nil, generates a concealment frame.
 	DecodeWithPLC(data []byte) (*AudioSamples, error)
 
+	// Provider returns which provider created this decoder.
+	Provider() Provider
+
 	// Config returns the decoder configuration.
 	Config() AudioDecoderConfig
 
@@ -124,100 +149,153 @@ type AudioDecoder interface {
 	Reset() error
 }
 
-// VideoDecoderFactory creates a video decoder.
-type VideoDecoderFactory func(config VideoDecoderConfig) (VideoDecoder, error)
+// --- Registry ---
 
-// AudioDecoderFactory creates an audio decoder.
-type AudioDecoderFactory func(config AudioDecoderConfig) (AudioDecoder, error)
+type videoDecoderFactory func(VideoDecoderConfig) (VideoDecoder, error)
+type audioDecoderFactory func(AudioDecoderConfig) (AudioDecoder, error)
 
-// decoderRegistry holds registered decoder factories.
 type decoderRegistry struct {
-	videoFactories map[VideoCodec]VideoDecoderFactory
-	audioFactories map[AudioCodec]AudioDecoderFactory
-	mu             sync.RWMutex
+	mu sync.RWMutex
+
+	// Provider-aware registry: codec -> provider -> factory
+	videoProviders map[VideoCodec]map[Provider]videoDecoderFactory
+	audioProviders map[AudioCodec]map[Provider]audioDecoderFactory
+
+	// Default provider per codec
+	videoDefaults map[VideoCodec]Provider
+	audioDefaults map[AudioCodec]Provider
 }
 
 var globalDecoderRegistry = &decoderRegistry{
-	videoFactories: make(map[VideoCodec]VideoDecoderFactory),
-	audioFactories: make(map[AudioCodec]AudioDecoderFactory),
+	videoProviders: make(map[VideoCodec]map[Provider]videoDecoderFactory),
+	audioProviders: make(map[AudioCodec]map[Provider]audioDecoderFactory),
+	videoDefaults:  make(map[VideoCodec]Provider),
+	audioDefaults:  make(map[AudioCodec]Provider),
 }
 
-// RegisterVideoDecoder registers a video decoder factory for a codec.
-func RegisterVideoDecoder(codec VideoCodec, factory VideoDecoderFactory) {
+// registerVideoDecoder registers a video decoder factory for a codec+provider.
+func registerVideoDecoder(codec VideoCodec, provider Provider, factory videoDecoderFactory) {
 	globalDecoderRegistry.mu.Lock()
 	defer globalDecoderRegistry.mu.Unlock()
-	globalDecoderRegistry.videoFactories[codec] = factory
+
+	if globalDecoderRegistry.videoProviders[codec] == nil {
+		globalDecoderRegistry.videoProviders[codec] = make(map[Provider]videoDecoderFactory)
+	}
+	globalDecoderRegistry.videoProviders[codec][provider] = factory
+
+	// Set default: prefer BSD (permissive) license providers
+	current, exists := globalDecoderRegistry.videoDefaults[codec]
+	if !exists || (provider.License().Permissive() && !current.License().Permissive()) {
+		globalDecoderRegistry.videoDefaults[codec] = provider
+	}
 }
 
-// RegisterAudioDecoder registers an audio decoder factory for a codec.
-func RegisterAudioDecoder(codec AudioCodec, factory AudioDecoderFactory) {
+// registerAudioDecoder registers an audio decoder factory for a codec+provider.
+func registerAudioDecoder(codec AudioCodec, provider Provider, factory audioDecoderFactory) {
 	globalDecoderRegistry.mu.Lock()
 	defer globalDecoderRegistry.mu.Unlock()
-	globalDecoderRegistry.audioFactories[codec] = factory
+
+	if globalDecoderRegistry.audioProviders[codec] == nil {
+		globalDecoderRegistry.audioProviders[codec] = make(map[Provider]audioDecoderFactory)
+	}
+	globalDecoderRegistry.audioProviders[codec][provider] = factory
+
+	// Set default: prefer BSD license
+	current, exists := globalDecoderRegistry.audioDefaults[codec]
+	if !exists || (provider.License().Permissive() && !current.License().Permissive()) {
+		globalDecoderRegistry.audioDefaults[codec] = provider
+	}
 }
 
-// CreateVideoDecoder creates a video decoder for the specified codec.
-func CreateVideoDecoder(config VideoDecoderConfig) (VideoDecoder, error) {
+// SetDefaultVideoDecoderProvider sets the default provider for a video codec.
+func SetDefaultVideoDecoderProvider(codec VideoCodec, provider Provider) {
+	globalDecoderRegistry.mu.Lock()
+	defer globalDecoderRegistry.mu.Unlock()
+	globalDecoderRegistry.videoDefaults[codec] = provider
+}
+
+// SetDefaultAudioDecoderProvider sets the default provider for an audio codec.
+func SetDefaultAudioDecoderProvider(codec AudioCodec, provider Provider) {
+	globalDecoderRegistry.mu.Lock()
+	defer globalDecoderRegistry.mu.Unlock()
+	globalDecoderRegistry.audioDefaults[codec] = provider
+}
+
+// NewVideoDecoder creates a video decoder.
+func NewVideoDecoder(config VideoDecoderConfig) (VideoDecoder, error) {
 	globalDecoderRegistry.mu.RLock()
-	factory, ok := globalDecoderRegistry.videoFactories[config.Codec]
-	globalDecoderRegistry.mu.RUnlock()
+	defer globalDecoderRegistry.mu.RUnlock()
 
-	if !ok {
-		return nil, fmt.Errorf("video decoder not available: %v", config.Codec)
+	providers := globalDecoderRegistry.videoProviders[config.Codec]
+	if providers == nil {
+		return nil, fmt.Errorf("%w: no providers for %s", ErrCodecNotSupported, config.Codec)
+	}
+
+	// Resolve provider
+	p := config.Provider
+	if p == ProviderAuto {
+		p = globalDecoderRegistry.videoDefaults[config.Codec]
+	}
+
+	factory, ok := providers[p]
+	if !ok || !p.Available() {
+		return nil, fmt.Errorf("%w: %s for %s", ErrProviderNotFound, p, config.Codec)
 	}
 
 	return factory(config)
 }
 
-// CreateAudioDecoder creates an audio decoder for the specified codec.
-func CreateAudioDecoder(config AudioDecoderConfig) (AudioDecoder, error) {
+// NewAudioDecoder creates an audio decoder.
+func NewAudioDecoder(config AudioDecoderConfig) (AudioDecoder, error) {
 	globalDecoderRegistry.mu.RLock()
-	factory, ok := globalDecoderRegistry.audioFactories[config.Codec]
-	globalDecoderRegistry.mu.RUnlock()
+	defer globalDecoderRegistry.mu.RUnlock()
 
-	if !ok {
-		return nil, fmt.Errorf("audio decoder not available: %v", config.Codec)
+	providers := globalDecoderRegistry.audioProviders[config.Codec]
+	if providers == nil {
+		return nil, fmt.Errorf("%w: no providers for %s", ErrCodecNotSupported, config.Codec)
+	}
+
+	p := config.Provider
+	if p == ProviderAuto {
+		p = globalDecoderRegistry.audioDefaults[config.Codec]
+	}
+
+	factory, ok := providers[p]
+	if !ok || !p.Available() {
+		return nil, fmt.Errorf("%w: %s for %s", ErrProviderNotFound, p, config.Codec)
 	}
 
 	return factory(config)
 }
 
-// IsVideoDecoderAvailable checks if a video decoder is available.
-func IsVideoDecoderAvailable(codec VideoCodec) bool {
-	globalDecoderRegistry.mu.RLock()
-	defer globalDecoderRegistry.mu.RUnlock()
-	_, ok := globalDecoderRegistry.videoFactories[codec]
-	return ok
-}
-
-// IsAudioDecoderAvailable checks if an audio decoder is available.
-func IsAudioDecoderAvailable(codec AudioCodec) bool {
-	globalDecoderRegistry.mu.RLock()
-	defer globalDecoderRegistry.mu.RUnlock()
-	_, ok := globalDecoderRegistry.audioFactories[codec]
-	return ok
-}
-
-// AvailableVideoDecoders returns a list of available video decoders.
-func AvailableVideoDecoders() []VideoCodec {
+// VideoDecoderProviders returns available providers for a video codec.
+func VideoDecoderProviders(codec VideoCodec) []Provider {
 	globalDecoderRegistry.mu.RLock()
 	defer globalDecoderRegistry.mu.RUnlock()
 
-	codecs := make([]VideoCodec, 0, len(globalDecoderRegistry.videoFactories))
-	for c := range globalDecoderRegistry.videoFactories {
-		codecs = append(codecs, c)
+	providers := globalDecoderRegistry.videoProviders[codec]
+	result := make([]Provider, 0, len(providers))
+	for p := range providers {
+		if p.Available() {
+			result = append(result, p)
+		}
 	}
-	return codecs
+	return result
 }
 
-// AvailableAudioDecoders returns a list of available audio decoders.
-func AvailableAudioDecoders() []AudioCodec {
+// AudioDecoderProviders returns available providers for an audio codec.
+func AudioDecoderProviders(codec AudioCodec) []Provider {
 	globalDecoderRegistry.mu.RLock()
 	defer globalDecoderRegistry.mu.RUnlock()
 
-	codecs := make([]AudioCodec, 0, len(globalDecoderRegistry.audioFactories))
-	for c := range globalDecoderRegistry.audioFactories {
-		codecs = append(codecs, c)
+	providers := globalDecoderRegistry.audioProviders[codec]
+	result := make([]Provider, 0, len(providers))
+	for p := range providers {
+		if p.Available() {
+			result = append(result, p)
+		}
 	}
-	return codecs
+	return result
 }
+
+

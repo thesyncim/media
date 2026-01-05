@@ -176,6 +176,34 @@ int media_vpx_decoder_reset(media_vpx_decoder_t decoder);
 void media_vpx_decoder_destroy(media_vpx_decoder_t decoder);
 
 // ============================================================================
+// purego-friendly decode API (avoids pointer-to-pointer output parameters)
+// ============================================================================
+
+// Decode result structure - all output values in a single contiguous struct
+// This avoids purego issues with pointer-to-pointer parameters on arm64
+typedef struct {
+    uint64_t y_ptr;      // Pointer to Y plane (cast from uint8_t*)
+    uint64_t u_ptr;      // Pointer to U plane (cast from uint8_t*)
+    uint64_t v_ptr;      // Pointer to V plane (cast from uint8_t*)
+    int32_t  y_stride;   // Y plane stride
+    int32_t  uv_stride;  // UV plane stride
+    int32_t  width;      // Frame width
+    int32_t  height;     // Frame height
+    int32_t  result;     // 1=decoded, 0=buffering, <0=error
+    int32_t  reserved;   // Padding for alignment
+} media_vpx_decode_result_t;
+
+// Decode frame with struct output (purego-friendly)
+// result_out must point to a valid media_vpx_decode_result_t struct
+// Returns: 1 if frame decoded, 0 if buffering, negative on error
+int media_vpx_decoder_decode_v2(
+    media_vpx_decoder_t decoder,
+    const uint8_t* data,
+    int data_len,
+    media_vpx_decode_result_t* result_out
+);
+
+// ============================================================================
 // Utility
 // ============================================================================
 

@@ -85,11 +85,13 @@ func (p *VP8Packetizer) SetMTU(mtu int)          { p.mu.Lock(); p.mtu = mtu; p.m
 
 // VP8Depacketizer implements RTPDepacketizer for VP8 using pion's codecs.
 type VP8Depacketizer struct {
-	depacketizer codecs.VP8Packet
-	buffer       []byte
-	timestamp    uint32
-	frameType    FrameType
-	mu           sync.Mutex
+	depacketizer       codecs.VP8Packet
+	buffer             []byte
+	timestamp          uint32
+	frameType          FrameType
+	lastCompletedTs    uint32 // Track last completed frame timestamp
+	hasCompletedFrame  bool   // Whether we've completed at least one frame
+	mu                 sync.Mutex
 }
 
 // NewVP8Depacketizer creates a new VP8 RTP depacketizer.
@@ -104,6 +106,13 @@ func (d *VP8Depacketizer) Depacketize(packet *RTPPacket) (*EncodedFrame, error) 
 
 	if _, err := d.depacketizer.Unmarshal(packet.Payload); err != nil {
 		return nil, fmt.Errorf("VP8 unmarshal failed: %w", err)
+	}
+
+	// Discard late-arriving packets for already completed frames
+	// Use RTP timestamp comparison that handles wraparound
+	if d.hasCompletedFrame && isTimestampOlder(packet.Header.Timestamp, d.lastCompletedTs) {
+		// This packet belongs to a frame we've already completed - discard it
+		return nil, nil
 	}
 
 	// Handle timestamp changes (new frame started)
@@ -130,11 +139,29 @@ func (d *VP8Depacketizer) Depacketize(packet *RTPPacket) (*EncodedFrame, error) 
 			Timestamp: d.timestamp,
 		}
 		copy(frame.Data, d.buffer)
+
+		// Track this as completed
+		d.lastCompletedTs = d.timestamp
+		d.hasCompletedFrame = true
+
 		d.buffer = d.buffer[:0]
 		d.frameType = FrameTypeUnknown
 		return frame, nil
 	}
 	return nil, nil
+}
+
+// isTimestampOlder returns true if ts1 is older than ts2, handling 32-bit wraparound.
+// Uses the RTP timestamp comparison method: if the difference is > 2^31, it wrapped.
+func isTimestampOlder(ts1, ts2 uint32) bool {
+	// If ts1 == ts2, consider it "older" (already processed)
+	if ts1 == ts2 {
+		return true
+	}
+	// Standard RTP timestamp comparison with wraparound handling
+	// ts1 is older if (ts2 - ts1) < 2^31
+	diff := ts2 - ts1
+	return diff < 0x80000000
 }
 
 // DepacketizeBytes processes raw RTP packet bytes.
@@ -146,12 +173,14 @@ func (d *VP8Depacketizer) DepacketizeBytes(data []byte) (*EncodedFrame, error) {
 	return d.Depacketize(&pkt)
 }
 
-// Reset clears any buffered partial frames.
+// Reset clears any buffered partial frames and resets tracking state.
 func (d *VP8Depacketizer) Reset() {
 	d.mu.Lock()
 	d.buffer = d.buffer[:0]
 	d.timestamp = 0
 	d.frameType = FrameTypeUnknown
+	d.lastCompletedTs = 0
+	d.hasCompletedFrame = false
 	d.mu.Unlock()
 }
 

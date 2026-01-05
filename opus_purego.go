@@ -1,4 +1,4 @@
-//go:build (darwin || linux) && !noopus && !cgo
+//go:build (darwin || linux) && !noopus
 
 // Package media provides Opus audio codec support via libmedia_opus using purego.
 //
@@ -313,7 +313,7 @@ func NewOpusEncoder(config AudioEncoderConfig) (*OpusEncoder, error) {
 	enc := &OpusEncoder{
 		config:       config,
 		handle:       handle,
-		outputBuf:    make([]byte, 4000), // Max Opus packet size
+		outputBuf:    make([]byte, 32768), // 32KB max for safety (Opus can produce large packets with certain configs)
 		sampleRate:   sampleRate,
 		channels:     channels,
 		application:  application,
@@ -390,6 +390,10 @@ func (e *OpusEncoder) EncodeFloat(samples []float32, frameSize int) ([]byte, err
 
 	if e.handle == 0 {
 		return nil, fmt.Errorf("encoder not initialized")
+	}
+
+	if len(samples) == 0 {
+		return nil, fmt.Errorf("empty audio samples")
 	}
 
 	result := mediaOpusEncoderEncodeFloat(
@@ -527,6 +531,11 @@ func (e *OpusEncoder) Stats() AudioEncoderStats {
 	e.statsMu.Lock()
 	defer e.statsMu.Unlock()
 	return e.stats
+}
+
+// Provider implements AudioEncoder.
+func (e *OpusEncoder) Provider() Provider {
+	return ProviderLibopus
 }
 
 // Close releases encoder resources.
@@ -729,6 +738,11 @@ func (d *OpusDecoder) Stats() AudioDecoderStats {
 	return d.stats
 }
 
+// Provider implements AudioDecoder.
+func (d *OpusDecoder) Provider() Provider {
+	return ProviderLibopus
+}
+
 // Reset resets decoder state.
 func (d *OpusDecoder) Reset() error {
 	d.mu.Lock()
@@ -768,12 +782,17 @@ func GetOpusPacketSamples(data []byte, sampleRate int) int {
 	))
 }
 
-// Register Opus encoder and decoder
+// Register Opus encoder and decoder (libopus)
 func init() {
-	RegisterAudioEncoder(AudioCodecOpus, func(config AudioEncoderConfig) (AudioEncoder, error) {
+	if err := loadMediaOpus(); err != nil {
+		return
+	}
+
+	setProviderAvailable(ProviderLibopus)
+	registerAudioEncoder(AudioCodecOpus, ProviderLibopus, func(config AudioEncoderConfig) (AudioEncoder, error) {
 		return NewOpusEncoder(config)
 	})
-	RegisterAudioDecoder(AudioCodecOpus, func(config AudioDecoderConfig) (AudioDecoder, error) {
+	registerAudioDecoder(AudioCodecOpus, ProviderLibopus, func(config AudioDecoderConfig) (AudioDecoder, error) {
 		return NewOpusDecoder(config)
 	})
 }

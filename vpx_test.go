@@ -487,30 +487,20 @@ func TestVP9DecoderReset(t *testing.T) {
 	}
 }
 
-// TestCodecRegistry tests that VP8/VP9 codecs are registered.
+// TestCodecRegistry tests that VP8/VP9 codecs are available.
 func TestCodecRegistry(t *testing.T) {
-	// VP8 encoder should be registered
-	if !IsVideoEncoderAvailable(VideoCodecVP8) {
-		t.Error("VP8 encoder should be registered")
+	// VP8 should be available
+	if !IsVP8Available() {
+		t.Error("VP8 should be available")
 	}
 
-	// VP9 encoder should be registered
-	if !IsVideoEncoderAvailable(VideoCodecVP9) {
-		t.Error("VP9 encoder should be registered")
+	// VP9 should be available
+	if !IsVP9Available() {
+		t.Error("VP9 should be available")
 	}
 
-	// VP8 decoder should be registered
-	if !IsVideoDecoderAvailable(VideoCodecVP8) {
-		t.Error("VP8 decoder should be registered")
-	}
-
-	// VP9 decoder should be registered
-	if !IsVideoDecoderAvailable(VideoCodecVP9) {
-		t.Error("VP9 decoder should be registered")
-	}
-
-	// Create via registry
-	enc, err := CreateVideoEncoder(VideoEncoderConfig{
+	// Create encoder via NewVideoEncoder
+	enc, err := NewVideoEncoder(VideoEncoderConfig{
 		Codec:      VideoCodecVP8,
 		Width:      320,
 		Height:     240,
@@ -518,13 +508,14 @@ func TestCodecRegistry(t *testing.T) {
 		BitrateBps: 500000,
 	})
 	if err != nil {
-		t.Fatalf("CreateVideoEncoder(VP8) failed: %v", err)
+		t.Fatalf("NewVideoEncoder(VP8) failed: %v", err)
 	}
 	defer enc.Close()
 
-	dec, err := CreateVideoDecoder(VideoDecoderConfig{Codec: VideoCodecVP8})
+	// Create decoder via NewVideoDecoder
+	dec, err := NewVideoDecoder(VideoDecoderConfig{Codec: VideoCodecVP8})
 	if err != nil {
-		t.Fatalf("CreateVideoDecoder(VP8) failed: %v", err)
+		t.Fatalf("NewVideoDecoder(VP8) failed: %v", err)
 	}
 	defer dec.Close()
 }

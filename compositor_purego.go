@@ -1,4 +1,4 @@
-//go:build (darwin || linux) && !cgo
+//go:build (darwin || linux)
 
 // Package media provides video compositing via libmedia_compositor using purego.
 

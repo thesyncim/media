@@ -227,12 +227,16 @@ func parseAnnexBNALUnits(data []byte) [][]byte {
 
 // H264Depacketizer reassembles H.264 NAL units from RTP packets.
 type H264Depacketizer struct {
-	frameData   []byte    // Accumulated NAL data for current frame (Annex-B format)
-	fuaBuffer   []byte    // Buffer for FU-A fragments (single NAL being assembled)
-	fragmenting bool      // True when in the middle of FU-A fragmentation
-	timestamp   uint32    // Current frame timestamp
-	frameType   FrameType // Current frame type (key or delta)
-	mu          sync.Mutex
+	frameData         []byte    // Accumulated NAL data for current frame (Annex-B format)
+	fuaBuffer         []byte    // Buffer for FU-A fragments (single NAL being assembled)
+	fragmenting       bool      // True when in the middle of FU-A fragmentation
+	timestamp         uint32    // Current frame timestamp
+	frameType         FrameType // Current frame type (key or delta)
+	lastCompletedTs   uint32    // Track last completed frame timestamp
+	hasCompletedFrame bool      // Whether we've completed at least one frame
+	sps               []byte    // Cached SPS (Annex-B)
+	pps               []byte    // Cached PPS (Annex-B)
+	mu                sync.Mutex
 }
 
 // NewH264Depacketizer creates a new H.264 RTP depacketizer.
@@ -247,6 +251,11 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	defer d.mu.Unlock()
 
 	if len(pkt.Payload) == 0 {
+		return nil, nil
+	}
+
+	// Discard late-arriving packets for already completed frames
+	if d.hasCompletedFrame && isTimestampOlderH264(pkt.Header.Timestamp, d.lastCompletedTs) {
 		return nil, nil
 	}
 
@@ -265,6 +274,11 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	case nalType >= 1 && nalType <= 23:
 		// Single NAL unit packet - accumulate into frame
 		// Detect keyframe (IDR = type 5)
+		if nalType == nalTypeSPS {
+			d.sps = ensureAnnexBNAL(pkt.Payload)
+		} else if nalType == nalTypePPS {
+			d.pps = ensureAnnexBNAL(pkt.Payload)
+		}
 		if nalType == nalTypeIDR {
 			d.frameType = FrameTypeKey
 		} else if d.frameType != FrameTypeKey {
@@ -292,12 +306,31 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 
 	// Return frame when marker bit is set (end of frame)
 	if pkt.Header.Marker && len(d.frameData) > 0 {
+		frameData := d.frameData
+		if d.frameType == FrameTypeKey {
+			hasSPS, hasPPS := h264FrameHasParamSets(frameData)
+			if (!hasSPS && len(d.sps) > 0) || (!hasPPS && len(d.pps) > 0) {
+				combined := make([]byte, 0, len(d.sps)+len(d.pps)+len(frameData))
+				if !hasSPS && len(d.sps) > 0 {
+					combined = append(combined, d.sps...)
+				}
+				if !hasPPS && len(d.pps) > 0 {
+					combined = append(combined, d.pps...)
+				}
+				combined = append(combined, frameData...)
+				frameData = combined
+			}
+		}
 		frame := &EncodedFrame{
-			Data:      make([]byte, len(d.frameData)),
+			Data:      make([]byte, len(frameData)),
 			FrameType: d.frameType,
 			Timestamp: d.timestamp,
 		}
-		copy(frame.Data, d.frameData)
+		copy(frame.Data, frameData)
+
+		// Track this as completed
+		d.lastCompletedTs = d.timestamp
+		d.hasCompletedFrame = true
 
 		// Reset for next frame
 		d.frameData = d.frameData[:0]
@@ -306,6 +339,15 @@ func (d *H264Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	}
 
 	return nil, nil
+}
+
+// isTimestampOlderH264 returns true if ts1 is older than or equal to ts2, handling 32-bit wraparound.
+func isTimestampOlderH264(ts1, ts2 uint32) bool {
+	if ts1 == ts2 {
+		return true
+	}
+	diff := ts2 - ts1
+	return diff < 0x80000000
 }
 
 func (d *H264Depacketizer) depacketizeSTAPA(payload []byte) error {
@@ -333,13 +375,21 @@ func (d *H264Depacketizer) depacketizeSTAPA(payload []byte) error {
 			}
 		}
 
-		// Add start code + NAL unit to frame data
-		d.frameData = append(d.frameData, 0, 0, 0, 1)
-		d.frameData = append(d.frameData, payload[offset:offset+naluSize]...)
-		offset += naluSize
+	// Add start code + NAL unit to frame data
+	d.frameData = append(d.frameData, 0, 0, 0, 1)
+	d.frameData = append(d.frameData, payload[offset:offset+naluSize]...)
+	offset += naluSize
+	if naluSize > 0 {
+		nalType := payload[offset-naluSize] & 0x1F
+		if nalType == nalTypeSPS {
+			d.sps = ensureAnnexBNAL(payload[offset-naluSize : offset])
+		} else if nalType == nalTypePPS {
+			d.pps = ensureAnnexBNAL(payload[offset-naluSize : offset])
+		}
 	}
+}
 
-	return nil
+return nil
 }
 
 func (d *H264Depacketizer) depacketizeFUA(payload []byte) error {
@@ -411,12 +461,77 @@ func (d *H264Depacketizer) Reset() {
 	d.timestamp = 0
 	d.frameType = FrameTypeUnknown
 	d.fragmenting = false
+	d.lastCompletedTs = 0
+	d.hasCompletedFrame = false
+	d.sps = nil
+	d.pps = nil
 	d.mu.Unlock()
 }
 
 // Codec returns the codec type.
 func (d *H264Depacketizer) Codec() VideoCodec {
 	return VideoCodecH264
+}
+
+// SetParameterSets seeds the depacketizer with SPS/PPS NAL units (raw or Annex-B).
+// This helps decoders when parameter sets are only provided via SDP.
+func (d *H264Depacketizer) SetParameterSets(sps, pps []byte) {
+	d.mu.Lock()
+	if len(sps) > 0 {
+		d.sps = ensureAnnexBNAL(sps)
+	}
+	if len(pps) > 0 {
+		d.pps = ensureAnnexBNAL(pps)
+	}
+	d.mu.Unlock()
+}
+
+func h264FrameHasParamSets(data []byte) (bool, bool) {
+	nalus := parseAnnexBNALUnits(data)
+	hasSPS := false
+	hasPPS := false
+	for _, nalu := range nalus {
+		if len(nalu) == 0 {
+			continue
+		}
+		switch nalu[0] & 0x1F {
+		case nalTypeSPS:
+			hasSPS = true
+		case nalTypePPS:
+			hasPPS = true
+		}
+		if hasSPS && hasPPS {
+			return true, true
+		}
+	}
+	return hasSPS, hasPPS
+}
+
+func ensureAnnexBNAL(nalu []byte) []byte {
+	if len(nalu) == 0 {
+		return nil
+	}
+	if hasStartCode(nalu) {
+		out := make([]byte, len(nalu))
+		copy(out, nalu)
+		return out
+	}
+	out := make([]byte, 4+len(nalu))
+	copy(out, []byte{0, 0, 0, 1})
+	copy(out[4:], nalu)
+	return out
+}
+
+func hasStartCode(data []byte) bool {
+	if len(data) >= 4 && data[0] == 0 && data[1] == 0 {
+		if data[2] == 0 && data[3] == 1 {
+			return true
+		}
+		if data[2] == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {

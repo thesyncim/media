@@ -1,4 +1,4 @@
-//go:build darwin && !nodevices && !cgo
+//go:build darwin && !nodevices
 
 package media
 
@@ -348,6 +348,10 @@ func (t *AVVideoCaptureTrack) handleFrame(
 	width, height int32,
 	timestampNs int64,
 ) {
+	// Check state early to avoid work for ended tracks
+	if t.state.Load() == int32(TrackStateEnded) {
+		return
+	}
 	if t.muted.Load() || !t.enabled.Load() {
 		return
 	}
@@ -489,23 +493,27 @@ func (t *AVVideoCaptureTrack) Settings() VideoTrackSettings {
 }
 
 func (t *AVVideoCaptureTrack) Close() error {
+	// Set state first to signal callbacks to stop processing
+	t.state.Store(int32(TrackStateEnded))
+
 	if t.handle != 0 {
 		mediaAVVideoCaptureStop(t.handle)
 		mediaAVVideoCaptureDestroy(t.handle)
 		t.handle = 0
 	}
 
-	// Remove from active captures
+	// Remove from active captures - this prevents new callbacks from finding us
 	avCapturesMu.Lock()
 	delete(avCaptures, t.captureID)
 	avCapturesMu.Unlock()
 
-	t.state.Store(int32(TrackStateEnded))
-
-	t.mu.RLock()
+	// Get channel and set to nil atomically under write lock
+	// This ensures no new sends happen after we close
+	t.mu.Lock()
 	endedCb := t.endedCb
 	ch := t.frameCh
-	t.mu.RUnlock()
+	t.frameCh = nil // Set to nil before closing to prevent sends
+	t.mu.Unlock()
 
 	if ch != nil {
 		close(ch)

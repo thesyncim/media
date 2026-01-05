@@ -85,11 +85,13 @@ func (p *VP9Packetizer) SetMTU(mtu int)          { p.mu.Lock(); p.mtu = mtu; p.m
 
 // VP9Depacketizer implements RTPDepacketizer for VP9 using pion's codecs.
 type VP9Depacketizer struct {
-	depacketizer codecs.VP9Packet
-	buffer       []byte
-	timestamp    uint32
-	frameType    FrameType
-	mu           sync.Mutex
+	depacketizer      codecs.VP9Packet
+	buffer            []byte
+	timestamp         uint32
+	frameType         FrameType
+	lastCompletedTs   uint32 // Track last completed frame timestamp
+	hasCompletedFrame bool   // Whether we've completed at least one frame
+	mu                sync.Mutex
 }
 
 // NewVP9Depacketizer creates a new VP9 RTP depacketizer.
@@ -104,6 +106,11 @@ func (d *VP9Depacketizer) Depacketize(packet *RTPPacket) (*EncodedFrame, error) 
 
 	if _, err := d.depacketizer.Unmarshal(packet.Payload); err != nil {
 		return nil, fmt.Errorf("VP9 unmarshal failed: %w", err)
+	}
+
+	// Discard late-arriving packets for already completed frames
+	if d.hasCompletedFrame && isTimestampOlderVP9(packet.Header.Timestamp, d.lastCompletedTs) {
+		return nil, nil
 	}
 
 	// Handle timestamp changes (new frame started)
@@ -133,11 +140,25 @@ func (d *VP9Depacketizer) Depacketize(packet *RTPPacket) (*EncodedFrame, error) 
 			SpatialLayerID:  d.depacketizer.SID,
 		}
 		copy(frame.Data, d.buffer)
+
+		// Track this as completed
+		d.lastCompletedTs = d.timestamp
+		d.hasCompletedFrame = true
+
 		d.buffer = d.buffer[:0]
 		d.frameType = FrameTypeUnknown
 		return frame, nil
 	}
 	return nil, nil
+}
+
+// isTimestampOlderVP9 returns true if ts1 is older than or equal to ts2, handling 32-bit wraparound.
+func isTimestampOlderVP9(ts1, ts2 uint32) bool {
+	if ts1 == ts2 {
+		return true
+	}
+	diff := ts2 - ts1
+	return diff < 0x80000000
 }
 
 // DepacketizeBytes processes raw RTP packet bytes.
@@ -149,12 +170,14 @@ func (d *VP9Depacketizer) DepacketizeBytes(data []byte) (*EncodedFrame, error) {
 	return d.Depacketize(&pkt)
 }
 
-// Reset clears any buffered partial frames.
+// Reset clears any buffered partial frames and resets tracking state.
 func (d *VP9Depacketizer) Reset() {
 	d.mu.Lock()
 	d.buffer = d.buffer[:0]
 	d.timestamp = 0
 	d.frameType = FrameTypeUnknown
+	d.lastCompletedTs = 0
+	d.hasCompletedFrame = false
 	d.mu.Unlock()
 }
 

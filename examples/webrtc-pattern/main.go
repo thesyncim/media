@@ -206,6 +206,23 @@ func startStream(offer webrtc.SessionDescription, codec media.VideoCodec, mimeTy
 func streamVideo(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP, pliChan <-chan struct{}, codec media.VideoCodec, cfg streamConfig) {
 	log.Printf("Starting stream: %s %dx%d @ %d kbps, source: %s", codec, cfg.Width, cfg.Height, cfg.Bitrate, cfg.Source)
 
+	// Get negotiated PT and SSRC from sender parameters
+	var pt uint8 = 96 // default fallback
+	var ssrc uint32 = uint32(time.Now().UnixNano() & 0xFFFFFFFF) // random fallback
+
+	senders := pc.GetSenders()
+	if len(senders) > 0 {
+		params := senders[0].GetParameters()
+		if len(params.Codecs) > 0 {
+			pt = uint8(params.Codecs[0].PayloadType)
+			log.Printf("Negotiated PT: %d", pt)
+		}
+		if len(params.Encodings) > 0 && params.Encodings[0].SSRC != 0 {
+			ssrc = uint32(params.Encodings[0].SSRC)
+			log.Printf("Negotiated SSRC: %d", ssrc)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -263,7 +280,7 @@ func streamVideo(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP, p
 	}
 	defer encoder.Close()
 
-	packetizer, err := media.CreateVideoPacketizer(codec, 0x12345678, 96, 1200)
+	packetizer, err := media.CreateVideoPacketizer(codec, ssrc, pt, 1200)
 	if err != nil {
 		log.Printf("Packetizer error: %v", err)
 		return

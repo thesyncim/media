@@ -535,7 +535,7 @@ media_h264_decoder_t media_h264_decoder_create(int threads) {
     }
 
     // Create OpenH264 decoder
-    if (g_WelsCreateDecoder(&state->decoder) != 0 || !state->decoder) {
+    if (g_WelsCreateDecoder((OH264_DECODER*)&state->decoder) != 0 || !state->decoder) {
         set_error("Failed to create OpenH264 decoder");
         free(state);
         return 0;
@@ -611,11 +611,22 @@ int media_h264_decoder_decode(
         return 0;  // No output yet (buffering)
     }
 
+    // Validate output dimensions before using
+    int w = bufInfo.UsrData.sSystemBuffer.iWidth;
+    int h = bufInfo.UsrData.sSystemBuffer.iHeight;
+    int ys = bufInfo.UsrData.sSystemBuffer.iStride[0];
+    int uvs = bufInfo.UsrData.sSystemBuffer.iStride[1];
+
+    if (w <= 0 || h <= 0 || ys <= 0 || uvs <= 0 || !dst[0] || !dst[1] || !dst[2]) {
+        // OpenH264 returned buffer status=1 but invalid data - need more frames
+        return 0;
+    }
+
     // Update state with decoded frame info
-    state->width = bufInfo.UsrData.sSystemBuffer.iWidth;
-    state->height = bufInfo.UsrData.sSystemBuffer.iHeight;
-    state->y_stride = bufInfo.UsrData.sSystemBuffer.iStride[0];
-    state->uv_stride = bufInfo.UsrData.sSystemBuffer.iStride[1];
+    state->width = w;
+    state->height = h;
+    state->y_stride = ys;
+    state->uv_stride = uvs;
 
     // Use dst array directly - DecodeFrameNoDelay fills this with Y, U, V pointers
     state->y_plane = dst[0];

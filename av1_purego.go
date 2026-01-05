@@ -1,4 +1,4 @@
-//go:build (darwin || linux) && !noav1 && !cgo
+//go:build (darwin || linux) && !noav1
 
 // Package media provides AV1 codec support via libmedia_av1 using purego.
 
@@ -67,6 +67,20 @@ const (
 	mediaAV1ErrorInvalid = -3
 	mediaAV1ErrorCodec   = -4
 )
+
+// mediaAV1DecodeResult is a heap-allocated struct for decoder output parameters.
+// This struct must be heap-allocated for purego to work correctly on arm64.
+// Using local stack variables for output parameters can fail due to GC moving
+// the stack during the C call.
+type mediaAV1DecodeResult struct {
+	YPtr     uintptr // Pointer to Y plane
+	UPtr     uintptr // Pointer to U plane
+	VPtr     uintptr // Pointer to V plane
+	YStride  int32   // Y plane stride
+	UVStride int32   // UV plane stride
+	Width    int32   // Frame width
+	Height   int32   // Frame height
+}
 
 // AV1Usage defines the encoding usage preset
 type AV1Usage int
@@ -265,9 +279,10 @@ func getAV1Error() string {
 type AV1Encoder struct {
 	config VideoEncoderConfig
 
-	handle    uint64
-	outputBuf []byte
-	usage     AV1Usage
+	handle       uint64
+	outputBuf    []byte
+	maxOutputLen int
+	usage        AV1Usage
 
 	stats   EncoderStats
 	statsMu sync.Mutex
@@ -353,6 +368,7 @@ func NewAV1Encoder(config VideoEncoderConfig) (*AV1Encoder, error) {
 		config:         config,
 		handle:         handle,
 		outputBuf:      make([]byte, maxOutput),
+		maxOutputLen:   int(maxOutput),
 		usage:          usage,
 		svcEnabled:     svcEnabled,
 		temporalLayers: temporalLayers,
@@ -454,12 +470,108 @@ func (e *AV1Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	}, nil
 }
 
+// EncodeInto implements VideoEncoder. Zero-allocation encode into provided buffer.
+func (e *AV1Encoder) EncodeInto(frame *VideoFrame, buf []byte) (EncodeResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.handle == 0 {
+		return EncodeResult{}, fmt.Errorf("encoder not initialized")
+	}
+
+	if len(buf) < e.maxOutputLen {
+		return EncodeResult{}, ErrBufferTooSmall
+	}
+
+	forceKeyframe := int32(0)
+	if e.keyframeReq.Swap(false) {
+		forceKeyframe = 1
+	}
+
+	var frameType int32
+	var pts int64
+	var temporalLayer, spatialLayer int32
+	var result int32
+
+	if e.svcEnabled {
+		result = mediaAV1EncoderEncodeSVC(
+			e.handle,
+			uintptr(unsafe.Pointer(&frame.Data[0][0])),
+			uintptr(unsafe.Pointer(&frame.Data[1][0])),
+			uintptr(unsafe.Pointer(&frame.Data[2][0])),
+			int32(frame.Stride[0]),
+			int32(frame.Stride[1]),
+			forceKeyframe,
+			uintptr(unsafe.Pointer(&buf[0])),
+			int32(len(buf)),
+			uintptr(unsafe.Pointer(&frameType)),
+			uintptr(unsafe.Pointer(&pts)),
+			uintptr(unsafe.Pointer(&temporalLayer)),
+			uintptr(unsafe.Pointer(&spatialLayer)),
+		)
+	} else {
+		result = mediaAV1EncoderEncode(
+			e.handle,
+			uintptr(unsafe.Pointer(&frame.Data[0][0])),
+			uintptr(unsafe.Pointer(&frame.Data[1][0])),
+			uintptr(unsafe.Pointer(&frame.Data[2][0])),
+			int32(frame.Stride[0]),
+			int32(frame.Stride[1]),
+			forceKeyframe,
+			uintptr(unsafe.Pointer(&buf[0])),
+			int32(len(buf)),
+			uintptr(unsafe.Pointer(&frameType)),
+			uintptr(unsafe.Pointer(&pts)),
+		)
+	}
+
+	if result < 0 {
+		return EncodeResult{}, fmt.Errorf("encode failed: %s", getAV1Error())
+	}
+
+	ft := FrameTypeDelta
+	if frameType == mediaAV1FrameKey {
+		ft = FrameTypeKey
+	}
+
+	e.statsMu.Lock()
+	e.stats.FramesEncoded++
+	if ft == FrameTypeKey {
+		e.stats.KeyframesEncoded++
+	}
+	e.stats.BytesEncoded += uint64(result)
+	e.statsMu.Unlock()
+
+	return EncodeResult{
+		N:         int(result),
+		FrameType: ft,
+		PTS:       pts,
+		DTS:       pts,
+	}, nil
+}
+
+// MaxEncodedSize implements VideoEncoder.
+func (e *AV1Encoder) MaxEncodedSize() int {
+	return e.maxOutputLen
+}
+
+// Provider implements VideoEncoder.
+func (e *AV1Encoder) Provider() Provider {
+	return ProviderAOM
+}
+
 // RequestKeyframe implements VideoEncoder.
 func (e *AV1Encoder) RequestKeyframe() {
 	e.keyframeReq.Store(true)
 	if e.handle != 0 {
 		mediaAV1EncoderRequestKF(e.handle)
 	}
+}
+
+// SetResolution implements VideoEncoder.
+// AV1 encoder does not currently support dynamic resolution change.
+func (e *AV1Encoder) SetResolution(width, height int) error {
+	return ErrNotSupported
 }
 
 // SetBitrate implements VideoEncoder.
@@ -568,6 +680,10 @@ type AV1Decoder struct {
 	width     int
 	height    int
 
+	// Persistent output buffer for purego workaround on arm64
+	// purego has issues with output pointer parameters, so we use heap-allocated struct
+	decodeResult *mediaAV1DecodeResult
+
 	stats   DecoderStats
 	statsMu sync.Mutex
 	mu      sync.Mutex
@@ -594,8 +710,9 @@ func NewAV1Decoder(config VideoDecoderConfig) (*AV1Decoder, error) {
 	}
 
 	return &AV1Decoder{
-		config: config,
-		handle: handle,
+		config:       config,
+		handle:       handle,
+		decodeResult: &mediaAV1DecodeResult{}, // Heap-allocated for purego arm64
 	}, nil
 }
 
@@ -608,21 +725,31 @@ func (d *AV1Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 		return nil, fmt.Errorf("decoder not initialized")
 	}
 
-	var outY, outU, outV uintptr
-	var outYStride, outUVStride, outWidth, outHeight int32
+	// Check for empty data before accessing slice
+	if len(encoded.Data) == 0 {
+		return nil, fmt.Errorf("empty encoded data")
+	}
+
+	// Use heap-allocated struct for output parameters
+	// This is required on arm64 because purego/GC can move stack variables during C calls
+	out := d.decodeResult
 
 	result := mediaAV1DecoderDecode(
 		d.handle,
 		uintptr(unsafe.Pointer(&encoded.Data[0])),
 		int32(len(encoded.Data)),
-		uintptr(unsafe.Pointer(&outY)),
-		uintptr(unsafe.Pointer(&outU)),
-		uintptr(unsafe.Pointer(&outV)),
-		uintptr(unsafe.Pointer(&outYStride)),
-		uintptr(unsafe.Pointer(&outUVStride)),
-		uintptr(unsafe.Pointer(&outWidth)),
-		uintptr(unsafe.Pointer(&outHeight)),
+		uintptr(unsafe.Pointer(&out.YPtr)),
+		uintptr(unsafe.Pointer(&out.UPtr)),
+		uintptr(unsafe.Pointer(&out.VPtr)),
+		uintptr(unsafe.Pointer(&out.YStride)),
+		uintptr(unsafe.Pointer(&out.UVStride)),
+		uintptr(unsafe.Pointer(&out.Width)),
+		uintptr(unsafe.Pointer(&out.Height)),
 	)
+
+	// Keep the struct and input alive during and after the C call
+	runtime.KeepAlive(encoded.Data)
+	runtime.KeepAlive(out)
 
 	if result < 0 {
 		d.statsMu.Lock()
@@ -635,31 +762,43 @@ func (d *AV1Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 		return nil, nil
 	}
 
-	w := int(outWidth)
-	h := int(outHeight)
+	// Validate output dimensions, strides, and plane pointers
+	if out.YStride <= 0 || out.UVStride <= 0 || out.Width <= 0 || out.Height <= 0 || out.YPtr == 0 {
+		d.statsMu.Lock()
+		d.stats.CorruptedFrames++
+		d.statsMu.Unlock()
+		return nil, fmt.Errorf("invalid decoder output: stride=%d/%d, size=%dx%d",
+			out.YStride, out.UVStride, out.Width, out.Height)
+	}
+
+	w := int(out.Width)
+	h := int(out.Height)
 	d.width = w
 	d.height = h
 
 	if d.outputBuf == nil || d.outputBuf.Width != w || d.outputBuf.Height != h {
 		d.outputBuf = NewVideoFrameBuffer(w, h, PixelFormatI420)
+		if d.outputBuf == nil {
+			return nil, fmt.Errorf("failed to allocate output buffer")
+		}
 	}
 
 	uvW := w / 2
 	uvH := h / 2
 	for row := 0; row < h; row++ {
-		src := unsafe.Slice((*byte)(unsafe.Pointer(outY+uintptr(row*int(outYStride)))), w)
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.YPtr+uintptr(row*int(out.YStride)))), w)
 		dstStart := row * d.outputBuf.StrideY
 		copy(d.outputBuf.Y[dstStart:dstStart+w], src)
 	}
 
 	for row := 0; row < uvH; row++ {
-		src := unsafe.Slice((*byte)(unsafe.Pointer(outU+uintptr(row*int(outUVStride)))), uvW)
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.UPtr+uintptr(row*int(out.UVStride)))), uvW)
 		dstStart := row * d.outputBuf.StrideU
 		copy(d.outputBuf.U[dstStart:dstStart+uvW], src)
 	}
 
 	for row := 0; row < uvH; row++ {
-		src := unsafe.Slice((*byte)(unsafe.Pointer(outV+uintptr(row*int(outUVStride)))), uvW)
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.VPtr+uintptr(row*int(out.UVStride)))), uvW)
 		dstStart := row * d.outputBuf.StrideV
 		copy(d.outputBuf.V[dstStart:dstStart+uvW], src)
 	}
@@ -678,6 +817,107 @@ func (d *AV1Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 	return &frame, nil
 }
 
+// DecodeInto implements VideoDecoder. Zero-allocation decode into provided frame.
+func (d *AV1Decoder) DecodeInto(encoded *EncodedFrame, frame *VideoFrame) (DecodeResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == 0 {
+		return DecodeResult{}, fmt.Errorf("decoder not initialized")
+	}
+
+	// Use heap-allocated struct for output parameters
+	out := d.decodeResult
+
+	result := mediaAV1DecoderDecode(
+		d.handle,
+		uintptr(unsafe.Pointer(&encoded.Data[0])),
+		int32(len(encoded.Data)),
+		uintptr(unsafe.Pointer(&out.YPtr)),
+		uintptr(unsafe.Pointer(&out.UPtr)),
+		uintptr(unsafe.Pointer(&out.VPtr)),
+		uintptr(unsafe.Pointer(&out.YStride)),
+		uintptr(unsafe.Pointer(&out.UVStride)),
+		uintptr(unsafe.Pointer(&out.Width)),
+		uintptr(unsafe.Pointer(&out.Height)),
+	)
+
+	runtime.KeepAlive(encoded.Data)
+	runtime.KeepAlive(out)
+
+	if result < 0 {
+		d.statsMu.Lock()
+		d.stats.CorruptedFrames++
+		d.statsMu.Unlock()
+		return DecodeResult{}, fmt.Errorf("decode failed: %s", getAV1Error())
+	}
+
+	if result == 0 {
+		return DecodeResult{}, nil
+	}
+
+	w := int(out.Width)
+	h := int(out.Height)
+	d.width = w
+	d.height = h
+
+	uvW := w / 2
+	uvH := h / 2
+	strideY := w
+	strideUV := uvW
+
+	if len(frame.Data[0]) < strideY*h {
+		return DecodeResult{}, ErrBufferTooSmall
+	}
+	if len(frame.Data[1]) < strideUV*uvH || len(frame.Data[2]) < strideUV*uvH {
+		return DecodeResult{}, ErrBufferTooSmall
+	}
+
+	frame.Width = w
+	frame.Height = h
+	frame.Stride[0] = strideY
+	frame.Stride[1] = strideUV
+	frame.Stride[2] = strideUV
+
+	for row := 0; row < h; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.YPtr+uintptr(row*int(out.YStride)))), w)
+		dstStart := row * strideY
+		copy(frame.Data[0][dstStart:dstStart+w], src)
+	}
+
+	for row := 0; row < uvH; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.UPtr+uintptr(row*int(out.UVStride)))), uvW)
+		dstStart := row * strideUV
+		copy(frame.Data[1][dstStart:dstStart+uvW], src)
+	}
+
+	for row := 0; row < uvH; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.VPtr+uintptr(row*int(out.UVStride)))), uvW)
+		dstStart := row * strideUV
+		copy(frame.Data[2][dstStart:dstStart+uvW], src)
+	}
+
+	ft := FrameTypeDelta
+	if encoded.FrameType == FrameTypeKey {
+		ft = FrameTypeKey
+	}
+
+	d.statsMu.Lock()
+	d.stats.FramesDecoded++
+	d.stats.BytesDecoded += uint64(len(encoded.Data))
+	if ft == FrameTypeKey {
+		d.stats.KeyframesDecoded++
+	}
+	d.statsMu.Unlock()
+
+	return DecodeResult{
+		Width:     w,
+		Height:    h,
+		FrameType: ft,
+		PTS:       int64(encoded.Timestamp),
+	}, nil
+}
+
 // DecodeRTP implements VideoDecoder.
 func (d *AV1Decoder) DecodeRTP(data []byte, marker bool, timestamp uint32) (*VideoFrame, error) {
 	encoded := &EncodedFrame{
@@ -685,6 +925,11 @@ func (d *AV1Decoder) DecodeRTP(data []byte, marker bool, timestamp uint32) (*Vid
 		Timestamp: timestamp,
 	}
 	return d.Decode(encoded)
+}
+
+// Provider implements VideoDecoder.
+func (d *AV1Decoder) Provider() Provider {
+	return ProviderAOM
 }
 
 // Config implements VideoDecoder.
@@ -751,12 +996,25 @@ func (d *AV1Decoder) Close() error {
 	return nil
 }
 
-// Register AV1 encoder and decoder
+// Register AV1 encoder and decoder (libaom)
 func init() {
-	RegisterVideoEncoder(VideoCodecAV1, func(config VideoEncoderConfig) (VideoEncoder, error) {
-		return NewAV1Encoder(config)
-	})
-	RegisterVideoDecoder(VideoCodecAV1, func(config VideoDecoderConfig) (VideoDecoder, error) {
-		return NewAV1Decoder(config)
-	})
+	if err := loadMediaAV1(); err != nil {
+		return
+	}
+
+	// Check encoder availability
+	if mediaAV1EncoderAvailable() != 0 {
+		setProviderAvailable(ProviderAOM)
+		registerVideoEncoder(VideoCodecAV1, ProviderAOM, func(config VideoEncoderConfig) (VideoEncoder, error) {
+			return NewAV1Encoder(config)
+		})
+	}
+
+	// Check decoder availability
+	if mediaAV1DecoderAvailable() != 0 {
+		setProviderAvailable(ProviderAOM)
+		registerVideoDecoder(VideoCodecAV1, ProviderAOM, func(config VideoDecoderConfig) (VideoDecoder, error) {
+			return NewAV1Decoder(config)
+		})
+	}
 }

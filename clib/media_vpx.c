@@ -110,8 +110,13 @@ media_vpx_encoder_t media_vpx_encoder_create(
         return 0;
     }
 
-    // Set CPU usage (realtime)
-    vpx_codec_control(&enc->codec, VP8E_SET_CPUUSED, 6);
+    // Set CPU usage - higher values = faster encoding (VP8: 0-16, VP9: -9 to 9)
+    // For real-time, use highest speed: VP8=16, VP9=9
+    if (codec == MEDIA_VPX_CODEC_VP8) {
+        vpx_codec_control(&enc->codec, VP8E_SET_CPUUSED, 16);  // Max speed for VP8
+    } else {
+        vpx_codec_control(&enc->codec, VP8E_SET_CPUUSED, 9);   // Max speed for VP9
+    }
 
     // VP9-specific settings
     if (codec == MEDIA_VPX_CODEC_VP9) {
@@ -264,7 +269,12 @@ media_vpx_encoder_t media_vpx_encoder_create_svc(
         return 0;
     }
 
-    vpx_codec_control(&enc->codec, VP8E_SET_CPUUSED, 6);
+    // Set CPU usage - higher values = faster encoding
+    if (codec == MEDIA_VPX_CODEC_VP8) {
+        vpx_codec_control(&enc->codec, VP8E_SET_CPUUSED, 16);  // Max speed for VP8
+    } else {
+        vpx_codec_control(&enc->codec, VP8E_SET_CPUUSED, 9);   // Max speed for VP9
+    }
 
     if (codec == MEDIA_VPX_CODEC_VP9) {
         vpx_codec_control(&enc->codec, VP9E_SET_ROW_MT, 1);
@@ -836,6 +846,74 @@ void media_vpx_decoder_destroy(media_vpx_decoder_t decoder) {
         vpx_codec_destroy(&dec->codec);
     }
     free(dec);
+}
+
+// ============================================================================
+// purego-friendly decode API
+// ============================================================================
+
+int media_vpx_decoder_decode_v2(
+    media_vpx_decoder_t decoder,
+    const uint8_t* data,
+    int data_len,
+    media_vpx_decode_result_t* result_out
+) {
+    decoder_state_t* dec = (decoder_state_t*)(uintptr_t)decoder;
+
+    // Initialize result to zeros
+    if (result_out) {
+        result_out->y_ptr = 0;
+        result_out->u_ptr = 0;
+        result_out->v_ptr = 0;
+        result_out->y_stride = 0;
+        result_out->uv_stride = 0;
+        result_out->width = 0;
+        result_out->height = 0;
+        result_out->result = 0;
+        result_out->reserved = 0;
+    }
+
+    if (!dec || !dec->initialized) {
+        set_error("invalid decoder handle");
+        if (result_out) result_out->result = MEDIA_VPX_ERROR_INVALID;
+        return MEDIA_VPX_ERROR_INVALID;
+    }
+
+    if (!result_out) {
+        set_error("result_out is NULL");
+        return MEDIA_VPX_ERROR_INVALID;
+    }
+
+    if (vpx_codec_decode(&dec->codec, data, data_len, NULL, 0) != VPX_CODEC_OK) {
+        dec->corrupted_frames++;
+        set_vpx_error(&dec->codec, "decode failed");
+        result_out->result = MEDIA_VPX_ERROR_CODEC;
+        return MEDIA_VPX_ERROR_CODEC;
+    }
+
+    vpx_codec_iter_t iter = NULL;
+    vpx_image_t* img = vpx_codec_get_frame(&dec->codec, &iter);
+    if (!img) {
+        result_out->result = 0;
+        return 0;  // Buffering, no frame yet
+    }
+
+    dec->width = img->d_w;
+    dec->height = img->d_h;
+    dec->frames_decoded++;
+    dec->bytes_decoded += data_len;
+
+    // Fill in result struct - cast pointers to uint64_t to avoid pointer issues
+    result_out->y_ptr = (uint64_t)(uintptr_t)img->planes[0];
+    result_out->u_ptr = (uint64_t)(uintptr_t)img->planes[1];
+    result_out->v_ptr = (uint64_t)(uintptr_t)img->planes[2];
+    result_out->y_stride = img->stride[0];
+    result_out->uv_stride = img->stride[1];
+    result_out->width = img->d_w;
+    result_out->height = img->d_h;
+    result_out->result = 1;
+
+    return 1;  // Frame decoded
 }
 
 // ============================================================================

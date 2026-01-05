@@ -1,4 +1,4 @@
-//go:build (darwin || linux) && !noh264 && !cgo
+//go:build (darwin || linux) && !noh264
 
 // Package media provides H.264 codec support via libmedia_h264 using purego.
 
@@ -64,6 +64,20 @@ const (
 	mediaH264ErrorInvalid = -3
 	mediaH264ErrorCodec   = -4
 )
+
+// mediaH264DecodeResult is a heap-allocated struct for decoder output parameters.
+// This struct must be heap-allocated for purego to work correctly on arm64.
+// Using local stack variables for output parameters can fail due to GC moving
+// the stack during the C call.
+type mediaH264DecodeResult struct {
+	YPtr     uintptr // Pointer to Y plane
+	UPtr     uintptr // Pointer to U plane
+	VPtr     uintptr // Pointer to V plane
+	YStride  int32   // Y plane stride
+	UVStride int32   // UV plane stride
+	Width    int32   // Frame width
+	Height   int32   // Frame height
+}
 
 // h264ProfileToStreamPurego converts H264Profile to media_h264 profile constant.
 func h264ProfileToStreamPurego(p H264Profile) int {
@@ -258,13 +272,14 @@ func getH264Error() string {
 	return goStringFromPtr(ptr)
 }
 
-// H264Encoder implements VideoEncoder for H.264.
+// H264Encoder implements VideoEncoder for H.264 (x264).
 type H264Encoder struct {
 	config VideoEncoderConfig
 
-	handle    uint64
-	outputBuf []byte
-	profile   H264Profile
+	handle       uint64
+	outputBuf    []byte
+	maxOutputLen int
+	profile      H264Profile
 
 	stats   EncoderStats
 	statsMu sync.Mutex
@@ -326,10 +341,11 @@ func NewH264Encoder(config VideoEncoderConfig) (*H264Encoder, error) {
 	}
 
 	enc := &H264Encoder{
-		config:    config,
-		handle:    handle,
-		outputBuf: make([]byte, maxOutput),
-		profile:   profile,
+		config:       config,
+		handle:       handle,
+		outputBuf:    make([]byte, maxOutput),
+		maxOutputLen: int(maxOutput),
+		profile:      profile,
 	}
 	enc.keyframeReq.Store(true)
 
@@ -440,12 +456,89 @@ func (e *H264Encoder) Encode(frame *VideoFrame) (*EncodedFrame, error) {
 	}, nil
 }
 
+// EncodeInto implements VideoEncoder. Zero-allocation encode into provided buffer.
+func (e *H264Encoder) EncodeInto(frame *VideoFrame, buf []byte) (EncodeResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.handle == 0 {
+		return EncodeResult{}, fmt.Errorf("encoder not initialized")
+	}
+
+	if len(buf) < e.maxOutputLen {
+		return EncodeResult{}, ErrBufferTooSmall
+	}
+
+	forceKeyframe := int32(0)
+	if e.keyframeReq.Swap(false) {
+		forceKeyframe = 1
+	}
+
+	var frameType int32
+	var pts, dts int64
+
+	result := mediaH264EncoderEncode(
+		e.handle,
+		uintptr(unsafe.Pointer(&frame.Data[0][0])),
+		uintptr(unsafe.Pointer(&frame.Data[1][0])),
+		uintptr(unsafe.Pointer(&frame.Data[2][0])),
+		int32(frame.Stride[0]),
+		int32(frame.Stride[1]),
+		forceKeyframe,
+		uintptr(unsafe.Pointer(&buf[0])),
+		int32(len(buf)),
+		uintptr(unsafe.Pointer(&frameType)),
+		uintptr(unsafe.Pointer(&pts)),
+		uintptr(unsafe.Pointer(&dts)),
+	)
+
+	if result < 0 {
+		return EncodeResult{}, fmt.Errorf("encode failed: %s", getH264Error())
+	}
+
+	ft := FrameTypeDelta
+	if frameType == mediaH264FrameIDR || frameType == mediaH264FrameI {
+		ft = FrameTypeKey
+	}
+
+	e.statsMu.Lock()
+	e.stats.FramesEncoded++
+	if ft == FrameTypeKey {
+		e.stats.KeyframesEncoded++
+	}
+	e.stats.BytesEncoded += uint64(result)
+	e.statsMu.Unlock()
+
+	return EncodeResult{
+		N:         int(result),
+		FrameType: ft,
+		PTS:       pts,
+		DTS:       dts,
+	}, nil
+}
+
+// MaxEncodedSize implements VideoEncoder.
+func (e *H264Encoder) MaxEncodedSize() int {
+	return e.maxOutputLen
+}
+
 // RequestKeyframe implements VideoEncoder.
 func (e *H264Encoder) RequestKeyframe() {
 	e.keyframeReq.Store(true)
 	if e.handle != 0 {
 		mediaH264EncoderRequestKF(e.handle)
 	}
+}
+
+// Provider implements VideoEncoder.
+func (e *H264Encoder) Provider() Provider {
+	return ProviderX264
+}
+
+// SetResolution implements VideoEncoder.
+// H264 encoder does not support dynamic resolution change.
+func (e *H264Encoder) SetResolution(width, height int) error {
+	return ErrNotSupported
 }
 
 // SetBitrate implements VideoEncoder.
@@ -510,6 +603,10 @@ type H264Decoder struct {
 	width     int
 	height    int
 
+	// Persistent output buffer for purego workaround on arm64
+	// purego has issues with output pointer parameters, so we use heap-allocated struct
+	decodeResult *mediaH264DecodeResult
+
 	stats   DecoderStats
 	statsMu sync.Mutex
 	mu      sync.Mutex
@@ -536,8 +633,9 @@ func NewH264Decoder(config VideoDecoderConfig) (*H264Decoder, error) {
 	}
 
 	return &H264Decoder{
-		config: config,
-		handle: handle,
+		config:       config,
+		handle:       handle,
+		decodeResult: &mediaH264DecodeResult{}, // Heap-allocated for purego arm64
 	}, nil
 }
 
@@ -550,21 +648,31 @@ func (d *H264Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 		return nil, fmt.Errorf("decoder not initialized")
 	}
 
-	var outY, outU, outV uintptr
-	var outYStride, outUVStride, outWidth, outHeight int32
+	// Check for empty data before accessing slice
+	if len(encoded.Data) == 0 {
+		return nil, fmt.Errorf("empty encoded data")
+	}
+
+	// Use heap-allocated struct for output parameters
+	// This is required on arm64 because purego/GC can move stack variables during C calls
+	out := d.decodeResult
 
 	result := mediaH264DecoderDecode(
 		d.handle,
 		uintptr(unsafe.Pointer(&encoded.Data[0])),
 		int32(len(encoded.Data)),
-		uintptr(unsafe.Pointer(&outY)),
-		uintptr(unsafe.Pointer(&outU)),
-		uintptr(unsafe.Pointer(&outV)),
-		uintptr(unsafe.Pointer(&outYStride)),
-		uintptr(unsafe.Pointer(&outUVStride)),
-		uintptr(unsafe.Pointer(&outWidth)),
-		uintptr(unsafe.Pointer(&outHeight)),
+		uintptr(unsafe.Pointer(&out.YPtr)),
+		uintptr(unsafe.Pointer(&out.UPtr)),
+		uintptr(unsafe.Pointer(&out.VPtr)),
+		uintptr(unsafe.Pointer(&out.YStride)),
+		uintptr(unsafe.Pointer(&out.UVStride)),
+		uintptr(unsafe.Pointer(&out.Width)),
+		uintptr(unsafe.Pointer(&out.Height)),
 	)
+
+	// Keep the struct and input alive during and after the C call
+	runtime.KeepAlive(encoded.Data)
+	runtime.KeepAlive(out)
 
 	if result < 0 {
 		d.statsMu.Lock()
@@ -577,31 +685,43 @@ func (d *H264Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 		return nil, nil
 	}
 
-	w := int(outWidth)
-	h := int(outHeight)
+	// Validate output dimensions, strides, and plane pointers
+	if out.YStride <= 0 || out.UVStride <= 0 || out.Width <= 0 || out.Height <= 0 || out.YPtr == 0 {
+		d.statsMu.Lock()
+		d.stats.CorruptedFrames++
+		d.statsMu.Unlock()
+		return nil, fmt.Errorf("invalid decoder output: stride=%d/%d, size=%dx%d",
+			out.YStride, out.UVStride, out.Width, out.Height)
+	}
+
+	w := int(out.Width)
+	h := int(out.Height)
 	d.width = w
 	d.height = h
 
 	if d.outputBuf == nil || d.outputBuf.Width != w || d.outputBuf.Height != h {
 		d.outputBuf = NewVideoFrameBuffer(w, h, PixelFormatI420)
+		if d.outputBuf == nil {
+			return nil, fmt.Errorf("failed to allocate output buffer")
+		}
 	}
 
 	uvW := w / 2
 	uvH := h / 2
 	for row := 0; row < h; row++ {
-		src := unsafe.Slice((*byte)(unsafe.Pointer(outY+uintptr(row*int(outYStride)))), w)
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.YPtr+uintptr(row*int(out.YStride)))), w)
 		dstStart := row * d.outputBuf.StrideY
 		copy(d.outputBuf.Y[dstStart:dstStart+w], src)
 	}
 
 	for row := 0; row < uvH; row++ {
-		src := unsafe.Slice((*byte)(unsafe.Pointer(outU+uintptr(row*int(outUVStride)))), uvW)
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.UPtr+uintptr(row*int(out.UVStride)))), uvW)
 		dstStart := row * d.outputBuf.StrideU
 		copy(d.outputBuf.U[dstStart:dstStart+uvW], src)
 	}
 
 	for row := 0; row < uvH; row++ {
-		src := unsafe.Slice((*byte)(unsafe.Pointer(outV+uintptr(row*int(outUVStride)))), uvW)
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.VPtr+uintptr(row*int(out.UVStride)))), uvW)
 		dstStart := row * d.outputBuf.StrideV
 		copy(d.outputBuf.V[dstStart:dstStart+uvW], src)
 	}
@@ -620,6 +740,109 @@ func (d *H264Decoder) Decode(encoded *EncodedFrame) (*VideoFrame, error) {
 	return &frame, nil
 }
 
+// DecodeInto implements VideoDecoder. Zero-allocation decode into provided frame.
+func (d *H264Decoder) DecodeInto(encoded *EncodedFrame, frame *VideoFrame) (DecodeResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.handle == 0 {
+		return DecodeResult{}, fmt.Errorf("decoder not initialized")
+	}
+
+	// Use heap-allocated struct for output parameters
+	out := d.decodeResult
+
+	result := mediaH264DecoderDecode(
+		d.handle,
+		uintptr(unsafe.Pointer(&encoded.Data[0])),
+		int32(len(encoded.Data)),
+		uintptr(unsafe.Pointer(&out.YPtr)),
+		uintptr(unsafe.Pointer(&out.UPtr)),
+		uintptr(unsafe.Pointer(&out.VPtr)),
+		uintptr(unsafe.Pointer(&out.YStride)),
+		uintptr(unsafe.Pointer(&out.UVStride)),
+		uintptr(unsafe.Pointer(&out.Width)),
+		uintptr(unsafe.Pointer(&out.Height)),
+	)
+
+	runtime.KeepAlive(encoded.Data)
+	runtime.KeepAlive(out)
+
+	if result < 0 {
+		d.statsMu.Lock()
+		d.stats.CorruptedFrames++
+		d.statsMu.Unlock()
+		return DecodeResult{}, fmt.Errorf("decode failed: %s", getH264Error())
+	}
+
+	if result == 0 {
+		return DecodeResult{}, nil // No output ready (buffering)
+	}
+
+	w := int(out.Width)
+	h := int(out.Height)
+	d.width = w
+	d.height = h
+
+	// Copy into provided frame
+	uvW := w / 2
+	uvH := h / 2
+	strideY := w
+	strideUV := uvW
+
+	// Ensure frame has allocated buffers
+	if len(frame.Data[0]) < strideY*h {
+		return DecodeResult{}, ErrBufferTooSmall
+	}
+	if len(frame.Data[1]) < strideUV*uvH || len(frame.Data[2]) < strideUV*uvH {
+		return DecodeResult{}, ErrBufferTooSmall
+	}
+
+	frame.Width = w
+	frame.Height = h
+	frame.Stride[0] = strideY
+	frame.Stride[1] = strideUV
+	frame.Stride[2] = strideUV
+
+	for row := 0; row < h; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.YPtr+uintptr(row*int(out.YStride)))), w)
+		dstStart := row * strideY
+		copy(frame.Data[0][dstStart:dstStart+w], src)
+	}
+
+	for row := 0; row < uvH; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.UPtr+uintptr(row*int(out.UVStride)))), uvW)
+		dstStart := row * strideUV
+		copy(frame.Data[1][dstStart:dstStart+uvW], src)
+	}
+
+	for row := 0; row < uvH; row++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(out.VPtr+uintptr(row*int(out.UVStride)))), uvW)
+		dstStart := row * strideUV
+		copy(frame.Data[2][dstStart:dstStart+uvW], src)
+	}
+
+	ft := FrameTypeDelta
+	if encoded.FrameType == FrameTypeKey {
+		ft = FrameTypeKey
+	}
+
+	d.statsMu.Lock()
+	d.stats.FramesDecoded++
+	d.stats.BytesDecoded += uint64(len(encoded.Data))
+	if ft == FrameTypeKey {
+		d.stats.KeyframesDecoded++
+	}
+	d.statsMu.Unlock()
+
+	return DecodeResult{
+		Width:     w,
+		Height:    h,
+		FrameType: ft,
+		PTS:       int64(encoded.Timestamp),
+	}, nil
+}
+
 // DecodeRTP implements VideoDecoder.
 func (d *H264Decoder) DecodeRTP(data []byte, marker bool, timestamp uint32) (*VideoFrame, error) {
 	encoded := &EncodedFrame{
@@ -627,6 +850,11 @@ func (d *H264Decoder) DecodeRTP(data []byte, marker bool, timestamp uint32) (*Vi
 		Timestamp: timestamp,
 	}
 	return d.Decode(encoded)
+}
+
+// Provider implements VideoDecoder.
+func (d *H264Decoder) Provider() Provider {
+	return ProviderOpenH264 // H264Decoder uses OpenH264 (BSD)
 }
 
 // Config implements VideoDecoder.
@@ -693,12 +921,21 @@ func (d *H264Decoder) Close() error {
 	return nil
 }
 
-// Register H.264 encoder and decoder
+// Register H.264 encoder and decoder (x264)
 func init() {
-	RegisterVideoEncoder(VideoCodecH264, func(config VideoEncoderConfig) (VideoEncoder, error) {
-		return NewH264Encoder(config)
-	})
-	RegisterVideoDecoder(VideoCodecH264, func(config VideoDecoderConfig) (VideoDecoder, error) {
-		return NewH264Decoder(config)
-	})
+	// Check if x264 is available
+	if err := loadMediaH264(); err == nil && mediaH264EncoderAvailable() != 0 {
+		setProviderAvailable(ProviderX264)
+		registerVideoEncoder(VideoCodecH264, ProviderX264, func(config VideoEncoderConfig) (VideoEncoder, error) {
+			return NewH264Encoder(config)
+		})
+	}
+
+	// Decoder uses OpenH264 (BSD), so register as OpenH264
+	if err := loadMediaH264(); err == nil && mediaH264DecoderAvailable() != 0 {
+		setProviderAvailable(ProviderOpenH264)
+		registerVideoDecoder(VideoCodecH264, ProviderOpenH264, func(config VideoDecoderConfig) (VideoDecoder, error) {
+			return NewH264Decoder(config)
+		})
+	}
 }

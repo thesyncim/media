@@ -8,7 +8,8 @@ Media processing library for Go with WebRTC-style APIs. Works with [pion/webrtc]
 - **RTP Packetization** - packetizers/depacketizers for VP8/VP9/H.264/AV1/Opus using pion/rtp
 - **Media Devices** - getUserMedia-style APIs; macOS video capture via AVFoundation (audio/display capture WIP); Linux device enumeration via V4L2/ALSA
 - **pion Compatible** - `LocalTrack` implements `webrtc.TrackLocal`
-- **Purego by default** - no CGO required; optional CGO build for lower overhead
+- **Purego only** - no CGO required; pure Go FFI via ebitengine/purego
+- **Provider system** - explicit codec provider selection (x264, OpenH264, libvpx, libaom, etc.)
 - **Sources & Utilities** - test patterns, camera source, compositor, scaler, codec detection helpers
 
 ## Install
@@ -287,7 +288,8 @@ OpenH264 is required at runtime for H.264 decode.
 
 - `novpx`, `noopus`, `noh264`, `noav1` - disable specific codecs
 - `nodevices` - disable device capture support
-- `CGO_ENABLED=0` uses purego; `CGO_ENABLED=1` enables CGO variants
+
+Note: CGO is not required. All codec bindings use purego for FFI.
 
 ### Run tests
 
@@ -302,17 +304,63 @@ Or manually:
 MEDIA_SDK_LIB_PATH=$PWD/build CGO_ENABLED=0 go test ./...
 ```
 
+## Codec Providers
+
+The library uses a provider-based abstraction for codec implementations. Each codec can have multiple providers with different licenses and features.
+
+| Provider | License | Encode | Decode | Features |
+|----------|---------|--------|--------|----------|
+| x264 | GPL | H.264 | - | B-frames, low latency, dynamic bitrate, 10-bit |
+| OpenH264 | BSD | H.264 | H.264 | SVC, low latency, dynamic bitrate |
+| libvpx | BSD | VP8/VP9 | VP8/VP9 | SVC, B-frames, low latency, dynamic bitrate, 10-bit |
+| libaom | BSD | AV1 | AV1 | SVC, B-frames, low latency, dynamic bitrate, 10-bit |
+| dav1d | BSD | - | AV1 | 10-bit |
+| svt-av1 | BSD | AV1 | - | SVC, low latency, dynamic bitrate, 10-bit |
+| libopus | BSD | Opus | Opus | Dynamic bitrate, low latency |
+
+### Provider Selection
+
+```go
+// Auto-select (library chooses best available)
+encoder, _ := media.NewVideoEncoder(media.VideoEncoderConfig{
+    Codec:      media.VideoCodecH264,
+    Provider:   media.ProviderAuto, // default
+    Width:      1920,
+    Height:     1080,
+    BitrateBps: 2_000_000,
+})
+
+// Explicit provider selection
+encoder, _ := media.NewVideoEncoder(media.VideoEncoderConfig{
+    Codec:      media.VideoCodecH264,
+    Provider:   media.ProviderOpenH264, // BSD licensed
+    Width:      1920,
+    Height:     1080,
+    BitrateBps: 2_000_000,
+})
+
+// Query available providers
+providers := media.VideoEncoderProviders(media.VideoCodecH264)
+for _, p := range providers {
+    fmt.Printf("%s (license: %s, features: %v)\n", p, p.License(), p.Features())
+}
+
+// Check provider capabilities
+if provider.Features().Has(media.FeatureSVC) {
+    // Enable SVC encoding
+}
+```
+
 ## Codec Support
 
 | Codec | Encode | Decode | RTP |
 |-------|--------|--------|-----|
 | VP8   | ✓      | ✓      | ✓   |
 | VP9   | ✓      | ✓      | ✓   |
-| H.264 | ✓      | ✓*     | ✓   |
+| H.264 | ✓      | ✓      | ✓   |
 | AV1   | ✓      | ✓      | ✓   |
 | Opus  | ✓      | ✓      | ✓   |
 
-*H.264 decode requires OpenH264 at runtime.
 H.265 is defined in `VideoCodec` but not implemented yet.
 
 ## Platform Support

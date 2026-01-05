@@ -1,21 +1,32 @@
 package media
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 )
 
+// Common errors
+var (
+	ErrBufferTooSmall    = errors.New("buffer too small")
+	ErrProviderNotFound  = errors.New("provider not available")
+	ErrCodecNotSupported = errors.New("codec not supported by provider")
+)
+
 // VideoEncoderConfig configures a video encoder.
 type VideoEncoderConfig struct {
-	Codec            VideoCodec      // Codec type (VP8, VP9, H264, AV1)
-	Width            int             // Frame width
-	Height           int             // Frame height
-	FPS              int             // Target framerate
-	BitrateBps       int             // Target bitrate in bits per second
+	Codec    VideoCodec // Codec type (VP8, VP9, H264, AV1)
+	Provider Provider   // Provider to use (ProviderAuto = library chooses)
+
+	Width      int // Frame width
+	Height     int // Frame height
+	FPS        int // Target framerate
+	BitrateBps int // Target bitrate in bits per second
+
 	MaxBitrateBps    int             // Maximum bitrate (0 = no limit)
 	MinBitrateBps    int             // Minimum bitrate (0 = no limit)
-	KeyframeInterval int             // Deprecated: automatic keyframes are disabled; use RequestKeyframe() for PLI
+	KeyframeInterval int             // Deprecated: use RequestKeyframe() for PLI
 	RateControlMode  RateControlMode // Rate control mode
 	Threads          int             // Encoder threads (0 = auto)
 	Quality          int             // Quality level (codec-specific, 0-63 for VP8/VP9)
@@ -35,11 +46,12 @@ type VideoEncoderConfig struct {
 func DefaultVideoEncoderConfig(codec VideoCodec, width, height int) VideoEncoderConfig {
 	return VideoEncoderConfig{
 		Codec:            codec,
+		Provider:         ProviderAuto,
 		Width:            width,
 		Height:           height,
 		FPS:              30,
 		BitrateBps:       1500000, // 1.5 Mbps
-		KeyframeInterval: 0,       // Automatic keyframes disabled; use RequestKeyframe() for PLI
+		KeyframeInterval: 0,       // Disabled; use RequestKeyframe()
 		RateControlMode:  RateControlVBR,
 		Threads:          0, // Auto
 		Quality:          32,
@@ -61,20 +73,44 @@ type EncoderStats struct {
 	DroppedFrames     uint64  // Frames dropped due to rate control
 }
 
+// EncodeResult contains the result of an encode operation.
+type EncodeResult struct {
+	N         int       // Bytes written
+	FrameType FrameType // Key or Delta
+	PTS       int64     // Presentation timestamp
+	DTS       int64     // Decode timestamp
+}
+
 // VideoEncoder encodes raw video frames to compressed bitstream.
 type VideoEncoder interface {
 	io.Closer
 
 	// Encode encodes a video frame.
-	// Returns nil if the encoder is buffering (e.g., B-frames) and no output is ready.
+	// Returns nil if the encoder is buffering and no output is ready.
 	// The returned EncodedFrame data is valid until the next Encode() call.
 	Encode(frame *VideoFrame) (*EncodedFrame, error)
+
+	// EncodeInto encodes directly into the provided buffer.
+	// Returns ErrBufferTooSmall if buf is insufficient (use MaxEncodedSize).
+	// This is the zero-allocation path for performance-critical code.
+	EncodeInto(frame *VideoFrame, buf []byte) (EncodeResult, error)
+
+	// MaxEncodedSize returns the maximum possible encoded size.
+	MaxEncodedSize() int
 
 	// RequestKeyframe forces the next frame to be a keyframe.
 	RequestKeyframe()
 
 	// SetBitrate updates the target bitrate dynamically.
 	SetBitrate(bitrateBps int) error
+
+	// SetResolution updates the encoding resolution dynamically.
+	// Returns ErrNotSupported if the provider doesn't support dynamic resolution.
+	// Check Provider().Features().Has(FeatureDynamicResolution) before calling.
+	SetResolution(width, height int) error
+
+	// Provider returns which provider created this encoder.
+	Provider() Provider
 
 	// Config returns the encoder configuration.
 	Config() VideoEncoderConfig
@@ -86,163 +122,210 @@ type VideoEncoder interface {
 	Stats() EncoderStats
 
 	// Flush flushes any buffered frames.
-	// Call this when no more input frames will be provided.
 	Flush() ([]*EncodedFrame, error)
 }
 
 // AudioEncoderConfig configures an audio encoder.
 type AudioEncoderConfig struct {
-	Codec       AudioCodec // Codec type (Opus, etc.)
-	SampleRate  int        // Sample rate (e.g., 48000)
-	Channels    int        // Number of channels (1 or 2)
-	BitrateBps  int        // Target bitrate in bps (e.g., 64000 for 64kbps)
-	FrameSizeMs int        // Frame size in milliseconds (Opus: 2.5, 5, 10, 20, 40, 60)
-	PayloadType uint8      // RTP payload type
+	Codec    AudioCodec // Codec type (Opus, etc.)
+	Provider Provider   // Provider to use (ProviderAuto = library chooses)
+
+	SampleRate  int   // Sample rate (e.g., 48000)
+	Channels    int   // Number of channels (1 or 2)
+	BitrateBps  int   // Target bitrate in bps
+	FrameSizeMs int   // Frame size in milliseconds
+	PayloadType uint8 // RTP payload type
 
 	// Opus-specific options
 	DTX         bool // Enable discontinuous transmission
 	FEC         bool // Enable forward error correction
 	Application int  // Opus application (0=VOIP, 1=Audio, 2=LowDelay)
-	Complexity  int  // Opus complexity (0-10, higher = better quality)
+	Complexity  int  // Opus complexity (0-10)
 }
 
 // DefaultAudioEncoderConfig returns a default audio encoder configuration.
 func DefaultAudioEncoderConfig(codec AudioCodec) AudioEncoderConfig {
 	return AudioEncoderConfig{
 		Codec:       codec,
+		Provider:    ProviderAuto,
 		SampleRate:  48000,
 		Channels:    2,
-		BitrateBps:  64000, // 64 kbps
-		FrameSizeMs: 20,    // 20ms frames
+		BitrateBps:  64000,
+		FrameSizeMs: 20,
 		PayloadType: codec.DefaultPayloadType(),
 		DTX:         true,
 		FEC:         true,
-		Application: 0, // VOIP
+		Application: 0,
 		Complexity:  10,
 	}
 }
 
 // AudioEncoderStats provides audio encoding metrics.
 type AudioEncoderStats struct {
-	FramesEncoded  uint64 // Total frames encoded
-	BytesEncoded   uint64 // Total bytes of encoded data
-	SamplesEncoded uint64 // Total samples encoded
-	EncodingTimeUs uint64 // Total encoding time in microseconds
-	SilentFrames   uint64 // Frames encoded as silence (DTX)
+	FramesEncoded  uint64
+	BytesEncoded   uint64
+	SamplesEncoded uint64
+	EncodingTimeUs uint64
+	SilentFrames   uint64
 }
 
 // AudioEncoder encodes raw audio samples to compressed bitstream.
 type AudioEncoder interface {
 	io.Closer
-
-	// Encode encodes audio samples.
-	// The input samples should match the configured sample rate and channels.
 	Encode(samples *AudioSamples) (*EncodedAudio, error)
-
-	// Config returns the encoder configuration.
+	Provider() Provider
 	Config() AudioEncoderConfig
-
-	// Codec returns the codec type.
 	Codec() AudioCodec
-
-	// Stats returns encoding statistics.
 	Stats() AudioEncoderStats
 }
 
-// VideoEncoderFactory creates a video encoder.
-type VideoEncoderFactory func(config VideoEncoderConfig) (VideoEncoder, error)
+// --- Registry ---
 
-// AudioEncoderFactory creates an audio encoder.
-type AudioEncoderFactory func(config AudioEncoderConfig) (AudioEncoder, error)
+type videoEncoderFactory func(VideoEncoderConfig) (VideoEncoder, error)
+type audioEncoderFactory func(AudioEncoderConfig) (AudioEncoder, error)
 
-// encoderRegistry holds registered encoder factories.
 type encoderRegistry struct {
-	videoFactories map[VideoCodec]VideoEncoderFactory
-	audioFactories map[AudioCodec]AudioEncoderFactory
-	mu             sync.RWMutex
+	mu sync.RWMutex
+
+	// Provider-aware registry: codec -> provider -> factory
+	videoProviders map[VideoCodec]map[Provider]videoEncoderFactory
+	audioProviders map[AudioCodec]map[Provider]audioEncoderFactory
+
+	// Default provider per codec
+	videoDefaults map[VideoCodec]Provider
+	audioDefaults map[AudioCodec]Provider
 }
 
 var globalEncoderRegistry = &encoderRegistry{
-	videoFactories: make(map[VideoCodec]VideoEncoderFactory),
-	audioFactories: make(map[AudioCodec]AudioEncoderFactory),
+	videoProviders: make(map[VideoCodec]map[Provider]videoEncoderFactory),
+	audioProviders: make(map[AudioCodec]map[Provider]audioEncoderFactory),
+	videoDefaults:  make(map[VideoCodec]Provider),
+	audioDefaults:  make(map[AudioCodec]Provider),
 }
 
-// RegisterVideoEncoder registers a video encoder factory for a codec.
-func RegisterVideoEncoder(codec VideoCodec, factory VideoEncoderFactory) {
+// registerVideoEncoder registers a video encoder factory for a codec+provider.
+func registerVideoEncoder(codec VideoCodec, provider Provider, factory videoEncoderFactory) {
 	globalEncoderRegistry.mu.Lock()
 	defer globalEncoderRegistry.mu.Unlock()
-	globalEncoderRegistry.videoFactories[codec] = factory
+
+	if globalEncoderRegistry.videoProviders[codec] == nil {
+		globalEncoderRegistry.videoProviders[codec] = make(map[Provider]videoEncoderFactory)
+	}
+	globalEncoderRegistry.videoProviders[codec][provider] = factory
+
+	// Set default: prefer BSD (permissive) license providers
+	current, exists := globalEncoderRegistry.videoDefaults[codec]
+	if !exists || (provider.License().Permissive() && !current.License().Permissive()) {
+		globalEncoderRegistry.videoDefaults[codec] = provider
+	}
 }
 
-// RegisterAudioEncoder registers an audio encoder factory for a codec.
-func RegisterAudioEncoder(codec AudioCodec, factory AudioEncoderFactory) {
+// registerAudioEncoder registers an audio encoder factory for a codec+provider.
+func registerAudioEncoder(codec AudioCodec, provider Provider, factory audioEncoderFactory) {
 	globalEncoderRegistry.mu.Lock()
 	defer globalEncoderRegistry.mu.Unlock()
-	globalEncoderRegistry.audioFactories[codec] = factory
+
+	if globalEncoderRegistry.audioProviders[codec] == nil {
+		globalEncoderRegistry.audioProviders[codec] = make(map[Provider]audioEncoderFactory)
+	}
+	globalEncoderRegistry.audioProviders[codec][provider] = factory
+
+	// Set default: prefer BSD license
+	current, exists := globalEncoderRegistry.audioDefaults[codec]
+	if !exists || (provider.License().Permissive() && !current.License().Permissive()) {
+		globalEncoderRegistry.audioDefaults[codec] = provider
+	}
 }
 
-// CreateVideoEncoder creates a video encoder for the specified codec.
-func CreateVideoEncoder(config VideoEncoderConfig) (VideoEncoder, error) {
+// SetDefaultVideoEncoderProvider sets the default provider for a video codec.
+func SetDefaultVideoEncoderProvider(codec VideoCodec, provider Provider) {
+	globalEncoderRegistry.mu.Lock()
+	defer globalEncoderRegistry.mu.Unlock()
+	globalEncoderRegistry.videoDefaults[codec] = provider
+}
+
+// SetDefaultAudioEncoderProvider sets the default provider for an audio codec.
+func SetDefaultAudioEncoderProvider(codec AudioCodec, provider Provider) {
+	globalEncoderRegistry.mu.Lock()
+	defer globalEncoderRegistry.mu.Unlock()
+	globalEncoderRegistry.audioDefaults[codec] = provider
+}
+
+// NewVideoEncoder creates a video encoder.
+func NewVideoEncoder(config VideoEncoderConfig) (VideoEncoder, error) {
 	globalEncoderRegistry.mu.RLock()
-	factory, ok := globalEncoderRegistry.videoFactories[config.Codec]
-	globalEncoderRegistry.mu.RUnlock()
+	defer globalEncoderRegistry.mu.RUnlock()
 
-	if !ok {
-		return nil, fmt.Errorf("video encoder not available: %v", config.Codec)
+	providers := globalEncoderRegistry.videoProviders[config.Codec]
+	if providers == nil {
+		return nil, fmt.Errorf("%w: no providers for %s", ErrCodecNotSupported, config.Codec)
+	}
+
+	// Resolve provider
+	p := config.Provider
+	if p == ProviderAuto {
+		p = globalEncoderRegistry.videoDefaults[config.Codec]
+	}
+
+	factory, ok := providers[p]
+	if !ok || !p.Available() {
+		return nil, fmt.Errorf("%w: %s for %s", ErrProviderNotFound, p, config.Codec)
 	}
 
 	return factory(config)
 }
 
-// CreateAudioEncoder creates an audio encoder for the specified codec.
-func CreateAudioEncoder(config AudioEncoderConfig) (AudioEncoder, error) {
+// NewAudioEncoder creates an audio encoder.
+func NewAudioEncoder(config AudioEncoderConfig) (AudioEncoder, error) {
 	globalEncoderRegistry.mu.RLock()
-	factory, ok := globalEncoderRegistry.audioFactories[config.Codec]
-	globalEncoderRegistry.mu.RUnlock()
+	defer globalEncoderRegistry.mu.RUnlock()
 
-	if !ok {
-		return nil, fmt.Errorf("audio encoder not available: %v", config.Codec)
+	providers := globalEncoderRegistry.audioProviders[config.Codec]
+	if providers == nil {
+		return nil, fmt.Errorf("%w: no providers for %s", ErrCodecNotSupported, config.Codec)
+	}
+
+	p := config.Provider
+	if p == ProviderAuto {
+		p = globalEncoderRegistry.audioDefaults[config.Codec]
+	}
+
+	factory, ok := providers[p]
+	if !ok || !p.Available() {
+		return nil, fmt.Errorf("%w: %s for %s", ErrProviderNotFound, p, config.Codec)
 	}
 
 	return factory(config)
 }
 
-// IsVideoEncoderAvailable checks if a video encoder is available.
-func IsVideoEncoderAvailable(codec VideoCodec) bool {
-	globalEncoderRegistry.mu.RLock()
-	defer globalEncoderRegistry.mu.RUnlock()
-	_, ok := globalEncoderRegistry.videoFactories[codec]
-	return ok
-}
-
-// IsAudioEncoderAvailable checks if an audio encoder is available.
-func IsAudioEncoderAvailable(codec AudioCodec) bool {
-	globalEncoderRegistry.mu.RLock()
-	defer globalEncoderRegistry.mu.RUnlock()
-	_, ok := globalEncoderRegistry.audioFactories[codec]
-	return ok
-}
-
-// AvailableVideoEncoders returns a list of available video encoders.
-func AvailableVideoEncoders() []VideoCodec {
+// VideoEncoderProviders returns available providers for a video codec.
+func VideoEncoderProviders(codec VideoCodec) []Provider {
 	globalEncoderRegistry.mu.RLock()
 	defer globalEncoderRegistry.mu.RUnlock()
 
-	codecs := make([]VideoCodec, 0, len(globalEncoderRegistry.videoFactories))
-	for c := range globalEncoderRegistry.videoFactories {
-		codecs = append(codecs, c)
+	providers := globalEncoderRegistry.videoProviders[codec]
+	result := make([]Provider, 0, len(providers))
+	for p := range providers {
+		if p.Available() {
+			result = append(result, p)
+		}
 	}
-	return codecs
+	return result
 }
 
-// AvailableAudioEncoders returns a list of available audio encoders.
-func AvailableAudioEncoders() []AudioCodec {
+// AudioEncoderProviders returns available providers for an audio codec.
+func AudioEncoderProviders(codec AudioCodec) []Provider {
 	globalEncoderRegistry.mu.RLock()
 	defer globalEncoderRegistry.mu.RUnlock()
 
-	codecs := make([]AudioCodec, 0, len(globalEncoderRegistry.audioFactories))
-	for c := range globalEncoderRegistry.audioFactories {
-		codecs = append(codecs, c)
+	providers := globalEncoderRegistry.audioProviders[codec]
+	result := make([]Provider, 0, len(providers))
+	for p := range providers {
+		if p.Available() {
+			result = append(result, p)
+		}
 	}
-	return codecs
+	return result
 }
+
+

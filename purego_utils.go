@@ -1,4 +1,4 @@
-//go:build (darwin || linux) && !cgo
+//go:build darwin || linux
 
 // Shared utilities for purego-based codec implementations.
 
@@ -12,8 +12,12 @@ import (
 	"unsafe"
 )
 
+// maxCStringLen is the maximum length we'll read from a C string.
+const maxCStringLen = 8192
+
 // goStringFromPtr converts a C string pointer to a Go string.
 // Used by both VPX and Opus purego implementations.
+// Note: Truncates strings longer than maxCStringLen characters.
 func goStringFromPtr(ptr uintptr) string {
 	if ptr == 0 {
 		return ""
@@ -26,7 +30,7 @@ func goStringFromPtr(ptr uintptr) string {
 			break
 		}
 		length++
-		if length > 1024 { // Safety limit
+		if length > maxCStringLen { // Safety limit to prevent reading unmapped memory
 			break
 		}
 	}
@@ -34,6 +38,20 @@ func goStringFromPtr(ptr uintptr) string {
 		return ""
 	}
 	return string(unsafe.Slice((*byte)(p), length))
+}
+
+// safeStrideMul safely multiplies row and stride, checking for overflow.
+// Returns (result, true) if multiplication is safe, or (0, false) on overflow.
+func safeStrideMul(row, stride int) (int, bool) {
+	if stride <= 0 || row < 0 {
+		return 0, false
+	}
+	result := row * stride
+	// Check for overflow: if result/stride != row, overflow occurred
+	if stride != 0 && result/stride != row {
+		return 0, false
+	}
+	return result, true
 }
 
 // findModuleRoot walks up the directory tree from the current working directory

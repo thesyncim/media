@@ -1,4 +1,4 @@
-//go:build linux && !nodevices && !cgo
+//go:build linux && !nodevices
 
 package media
 
@@ -296,18 +296,28 @@ func goV4L2FrameCallback(
 		return
 	}
 
+	// Validate dimensions before creating slices
+	if yStride <= 0 || uStride <= 0 || vStride <= 0 || width <= 0 || height <= 0 {
+		return
+	}
+
 	// Create frame from callback data
 	ySize := int(yStride) * int(height)
 	uvHeight := int(height) / 2
 	uSize := int(uStride) * uvHeight
 	vSize := int(vStride) * uvHeight
 
+	// Copy frame data to Go heap - C memory may be freed after callback returns
+	yData := make([]byte, ySize)
+	uData := make([]byte, uSize)
+	vData := make([]byte, vSize)
+
+	copy(yData, unsafe.Slice((*byte)(unsafe.Pointer(yPlane)), ySize))
+	copy(uData, unsafe.Slice((*byte)(unsafe.Pointer(uPlane)), uSize))
+	copy(vData, unsafe.Slice((*byte)(unsafe.Pointer(vPlane)), vSize))
+
 	frame := &VideoFrame{
-		Data: [][]byte{
-			unsafe.Slice((*byte)(unsafe.Pointer(yPlane)), ySize),
-			unsafe.Slice((*byte)(unsafe.Pointer(uPlane)), uSize),
-			unsafe.Slice((*byte)(unsafe.Pointer(vPlane)), vSize),
-		},
+		Data:      [][]byte{yData, uData, vData},
 		Stride:    []int{int(yStride), int(uStride), int(vStride)},
 		Width:     int(width),
 		Height:    int(height),

@@ -1,8 +1,10 @@
 package media
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"log"
+	"os"
 	"sync"
 
 	"github.com/pion/rtp"
@@ -10,8 +12,14 @@ import (
 )
 
 // av1DebugLog controls debug logging for AV1 depacketization
-var av1DebugLog = true
+var av1DebugLog = false
 var av1DebugCount = 0
+
+// AV1CaptureFile is the file path to capture raw RTP packets for debugging.
+// Set this before receiving packets to enable capture mode.
+var AV1CaptureFile = ""
+var av1CapturedPackets [][]byte
+var av1CaptureLimit = 50 // Capture first N packets
 
 // AV1Packetizer implements RTPPacketizer for AV1.
 // Uses pion's AV1Payloader which correctly implements RFC 9000.
@@ -102,15 +110,16 @@ func (p *AV1Packetizer) MTU() int                { p.mu.Lock(); defer p.mu.Unloc
 func (p *AV1Packetizer) SetMTU(mtu int)          { p.mu.Lock(); p.mtu = mtu; p.mu.Unlock() }
 
 // AV1Depacketizer reassembles AV1 OBUs from RTP packets.
-// Implements RFC 9000 AV1 RTP payload format parsing directly.
-// Reformats OBUs to include size fields for libaom compatibility.
+// Uses pion's AV1Packet for RFC 9000 parsing, then reformats OBUs for libaom.
 type AV1Depacketizer struct {
-	obuBuffer    []byte   // Accumulated complete OBUs
-	partialOBU   []byte   // Partial OBU fragment being accumulated
-	seqHeader    []byte   // Cached sequence header for delta frames
-	timestamp    uint32
-	frameType    FrameType
-	mu           sync.Mutex
+	av1Packet         codecs.AV1Packet // Pion's AV1Packet for proper RFC 9000 parsing
+	obuBuffer         []byte           // Accumulated complete OBUs
+	seqHeader         []byte           // Cached sequence header for delta frames
+	timestamp         uint32
+	frameType         FrameType
+	lastCompletedTs   uint32 // Track last completed frame timestamp
+	hasCompletedFrame bool   // Whether we've completed at least one frame
+	mu                sync.Mutex
 }
 
 // NewAV1Depacketizer creates a new AV1 RTP depacketizer.
@@ -123,123 +132,72 @@ func (d *AV1Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if len(pkt.Payload) < 2 {
+	if len(pkt.Payload) < 1 {
 		return nil, nil
+	}
+
+	// Discard late-arriving packets for already completed frames
+	if d.hasCompletedFrame && isTimestampOlderAV1(pkt.Header.Timestamp, d.lastCompletedTs) {
+		return nil, nil
+	}
+
+	// Capture raw packets for offline debugging
+	if AV1CaptureFile != "" && len(av1CapturedPackets) < av1CaptureLimit {
+		rawPkt, _ := pkt.Marshal()
+		av1CapturedPackets = append(av1CapturedPackets, rawPkt)
+		if len(av1CapturedPackets) == av1CaptureLimit {
+			AV1SaveCapturedPackets()
+		}
 	}
 
 	// Handle timestamp changes (new frame started)
 	if d.timestamp != 0 && d.timestamp != pkt.Header.Timestamp {
 		d.obuBuffer = d.obuBuffer[:0]
-		d.partialOBU = d.partialOBU[:0]
 	}
 	d.timestamp = pkt.Header.Timestamp
 
-	// Parse RFC 9000 aggregation header
-	aggHeader := pkt.Payload[0]
-	z := (aggHeader >> 7) & 1 // First OBU is continuation from previous packet
-	y := (aggHeader >> 6) & 1 // Last OBU continues to next packet
-	w := (aggHeader >> 4) & 3 // OBU count hint (0=1, 1=2, 2=variable, 3=reserved)
-	n := (aggHeader >> 3) & 1 // New temporal unit
+	// Debug: Log raw RTP payload for first few packets
+	if av1DebugLog && av1DebugCount < 10 {
+		aggHeader := pkt.Payload[0]
+		z := (aggHeader >> 7) & 1
+		y := (aggHeader >> 6) & 1
+		w := (aggHeader >> 4) & 3
+		n := (aggHeader >> 3) & 1
+		maxBytes := 100
+		if len(pkt.Payload) < maxBytes {
+			maxBytes = len(pkt.Payload)
+		}
+		log.Printf("AV1 RTP: seq=%d ts=%d marker=%v len=%d Z=%d Y=%d W=%d N=%d payload=%s",
+			pkt.Header.SequenceNumber, pkt.Header.Timestamp, pkt.Header.Marker,
+			len(pkt.Payload), z, y, w, n, hex.EncodeToString(pkt.Payload[:maxBytes]))
+	}
 
-	if n == 1 {
+	// Use pion's AV1Packet to properly parse RFC 9000 format
+	obus, err := d.av1Packet.Unmarshal(pkt.Payload)
+	if err != nil {
+		if av1DebugLog && av1DebugCount < 10 {
+			log.Printf("AV1 Unmarshal error: %v", err)
+		}
+		return nil, nil // Drop corrupt packets
+	}
+
+	// Check for new coded video sequence
+	if d.av1Packet.N {
 		d.frameType = FrameTypeKey
 	} else if d.frameType != FrameTypeKey {
 		d.frameType = FrameTypeDelta
 	}
 
-	offset := 1 // Skip aggregation header
-
-	// Determine number of OBU elements and how lengths are encoded per RFC 9000:
-	// W=0: 1 element, no length prefix
-	// W=1: 2 elements, first has length, second doesn't
-	// W=2: variable elements, all but last have length
-	// W=3: reserved
-
-	switch w {
-	case 0:
-		// Single OBU element, rest of packet is the element data
-		obuData := pkt.Payload[offset:]
-		if z == 1 {
-			// Continuation of previous OBU
-			d.partialOBU = append(d.partialOBU, obuData...)
-		} else {
-			// New complete OBU
-			d.partialOBU = append(d.partialOBU[:0], obuData...)
+	// Accumulate OBU data, adding size fields for each OBU element
+	for _, obu := range d.av1Packet.OBUElements {
+		if len(obu) > 0 {
+			d.obuBuffer = append(d.obuBuffer, av1EnsureOBUSize(obu)...)
 		}
-		if y == 0 {
-			// OBU is complete
-			d.obuBuffer = append(d.obuBuffer, d.partialOBU...)
-			d.partialOBU = d.partialOBU[:0]
-		}
+	}
 
-	case 1:
-		// Exactly 2 elements: first has length, second doesn't
-		// Handle Z=1 continuation first
-		if z == 1 && len(d.partialOBU) > 0 {
-			// First element is continuation
-			elemLen, lenBytes := av1ReadLEB128(pkt.Payload[offset:])
-			if lenBytes > 0 && offset+lenBytes+int(elemLen) <= len(pkt.Payload) {
-				offset += lenBytes
-				d.partialOBU = append(d.partialOBU, pkt.Payload[offset:offset+int(elemLen)]...)
-				offset += int(elemLen)
-				d.obuBuffer = append(d.obuBuffer, d.partialOBU...)
-				d.partialOBU = d.partialOBU[:0]
-			}
-		} else if offset < len(pkt.Payload) {
-			// First element with length prefix
-			elemLen, lenBytes := av1ReadLEB128(pkt.Payload[offset:])
-			if lenBytes > 0 && offset+lenBytes+int(elemLen) <= len(pkt.Payload) {
-				offset += lenBytes
-				d.obuBuffer = append(d.obuBuffer, pkt.Payload[offset:offset+int(elemLen)]...)
-				offset += int(elemLen)
-			}
-		}
-		// Second element takes rest of packet
-		if offset < len(pkt.Payload) {
-			obuData := pkt.Payload[offset:]
-			if y == 1 {
-				d.partialOBU = append(d.partialOBU[:0], obuData...)
-			} else {
-				d.obuBuffer = append(d.obuBuffer, obuData...)
-			}
-		}
-
-	case 2:
-		// Variable number of elements, all but last have length prefix
-		// Handle Z=1 continuation first
-		if z == 1 && len(d.partialOBU) > 0 {
-			elemLen, lenBytes := av1ReadLEB128(pkt.Payload[offset:])
-			if lenBytes > 0 && offset+lenBytes+int(elemLen) <= len(pkt.Payload) {
-				offset += lenBytes
-				d.partialOBU = append(d.partialOBU, pkt.Payload[offset:offset+int(elemLen)]...)
-				offset += int(elemLen)
-				d.obuBuffer = append(d.obuBuffer, d.partialOBU...)
-				d.partialOBU = d.partialOBU[:0]
-			}
-		}
-
-		// Parse elements until we reach the last one
-		for offset < len(pkt.Payload) {
-			// Try to read LEB128 length
-			elemLen, lenBytes := av1ReadLEB128(pkt.Payload[offset:])
-
-			// Check if this element would fit - if not, this is the last element
-			if lenBytes == 0 || offset+lenBytes+int(elemLen) > len(pkt.Payload) {
-				// Last element - rest of packet
-				obuData := pkt.Payload[offset:]
-				if y == 1 {
-					d.partialOBU = append(d.partialOBU[:0], obuData...)
-				} else {
-					d.obuBuffer = append(d.obuBuffer, obuData...)
-				}
-				break
-			}
-
-			// Complete element with length prefix
-			offset += lenBytes
-			d.obuBuffer = append(d.obuBuffer, pkt.Payload[offset:offset+int(elemLen)]...)
-			offset += int(elemLen)
-		}
+	// Also handle the remaining bytes returned from Unmarshal (last OBU fragment or complete OBU)
+	if len(obus) > 0 {
+		d.obuBuffer = append(d.obuBuffer, av1EnsureOBUSize(obus)...)
 	}
 
 	if pkt.Header.Marker {
@@ -278,13 +236,26 @@ func (d *AV1Depacketizer) Depacketize(pkt *rtp.Packet) (*EncodedFrame, error) {
 			FrameType: d.frameType,
 			Timestamp: d.timestamp,
 		}
+
+		// Track this as completed
+		d.lastCompletedTs = d.timestamp
+		d.hasCompletedFrame = true
+
 		d.obuBuffer = d.obuBuffer[:0]
-		d.partialOBU = d.partialOBU[:0]
 		d.frameType = FrameTypeUnknown
 		return frame, nil
 	}
 
 	return nil, nil
+}
+
+// isTimestampOlderAV1 returns true if ts1 is older than or equal to ts2, handling 32-bit wraparound.
+func isTimestampOlderAV1(ts1, ts2 uint32) bool {
+	if ts1 == ts2 {
+		return true
+	}
+	diff := ts2 - ts1
+	return diff < 0x80000000
 }
 
 // av1ExtractSequenceHeader extracts the sequence header OBU from frame data.
@@ -419,8 +390,8 @@ func av1OBUTypeName(t byte) string {
 }
 
 // av1NormalizeOBUs converts WebRTC AV1 data to a format libaom can decode.
-// WebRTC AV1 (RFC 9000) sends OBUs directly - we just need to ensure size fields.
-// seqHeader is cached from keyframes and prepended to delta frames if missing.
+// Since we now add size fields during depacketization, this mainly adds
+// Temporal Delimiter and prepends sequence header for delta frames.
 func av1NormalizeOBUs(data []byte, seqHeader []byte, isKeyframe bool) []byte {
 	if len(data) == 0 {
 		return data
@@ -437,8 +408,9 @@ func av1NormalizeOBUs(data []byte, seqHeader []byte, isKeyframe bool) []byte {
 		hasSeqHdr := false
 		if len(data) > 0 {
 			header := data[0]
+			forbidden := (header >> 7) & 0x01
 			obuType := (header >> 3) & 0x0F
-			if obuType == 1 {
+			if forbidden == 0 && obuType == 1 {
 				hasSeqHdr = true
 			}
 		}
@@ -447,75 +419,51 @@ func av1NormalizeOBUs(data []byte, seqHeader []byte, isKeyframe bool) []byte {
 		}
 	}
 
-	offset := 0
+	// Append the OBU data (should already have size fields from depacketization)
+	result = append(result, data...)
 
-	// Parse and copy OBUs, ensuring all have size fields
-	for offset < len(data) {
-		if offset >= len(data) {
-			break
-		}
+	return result
+}
 
-		header := data[offset]
-
-		// Check if this looks like a valid OBU header
-		forbidden := (header >> 7) & 0x01
-		obuType := (header >> 3) & 0x0F
-		extFlag := (header >> 2) & 0x01
-		hasSize := (header >> 1) & 0x01
-
-		// If forbidden bit is set or invalid type, skip this byte
-		if forbidden != 0 || !((obuType >= 1 && obuType <= 8) || obuType == 15) {
-			offset++
-			continue
-		}
-
-		headerSize := 1
-		if extFlag == 1 {
-			headerSize = 2
-		}
-
-		if offset+headerSize > len(data) {
-			break
-		}
-
-		if hasSize == 1 {
-			// OBU has size field - copy it as-is
-			sizeOffset := offset + headerSize
-			if sizeOffset >= len(data) {
-				break
-			}
-
-			obuPayloadSize, sizeBytes := av1ReadLEB128(data[sizeOffset:])
-			if sizeBytes == 0 {
-				break
-			}
-
-			totalOBULen := headerSize + sizeBytes + int(obuPayloadSize)
-			if offset+totalOBULen > len(data) {
-				// Size points past end of data - treat rest as payload
-				totalOBULen = len(data) - offset
-			}
-
-			result = append(result, data[offset:offset+totalOBULen]...)
-			offset += totalOBULen
-		} else {
-			// OBU without size field - this is the last OBU, takes rest of data
-			payloadStart := offset + headerSize
-			payloadLen := len(data) - payloadStart
-
-			// Rewrite header with hasSize=1
-			newHeader := header | 0x02
-			result = append(result, newHeader)
-
-			if extFlag == 1 {
-				result = append(result, data[offset+1])
-			}
-
-			result = append(result, av1WriteLEB128(uint64(payloadLen))...)
-			result = append(result, data[payloadStart:]...)
-			offset = len(data)
-		}
+// av1EnsureOBUSize takes an OBU element and ensures it has a size field.
+// If the OBU already has hasSize=1, returns it unchanged.
+// If hasSize=0, rewrites the header and prepends the size field.
+func av1EnsureOBUSize(obu []byte) []byte {
+	if len(obu) == 0 {
+		return obu
 	}
+
+	header := obu[0]
+	hasSize := (header >> 1) & 0x01
+	extFlag := (header >> 2) & 0x01
+
+	// Already has size field - return as-is
+	if hasSize == 1 {
+		return obu
+	}
+
+	// Need to add size field
+	headerSize := 1
+	if extFlag == 1 {
+		headerSize = 2
+	}
+
+	if len(obu) < headerSize {
+		return obu
+	}
+
+	payloadLen := len(obu) - headerSize
+
+	// Build new OBU with size field
+	newHeader := header | 0x02 // Set hasSize bit
+	result := []byte{newHeader}
+
+	if extFlag == 1 && len(obu) > 1 {
+		result = append(result, obu[1]) // Extension byte
+	}
+
+	result = append(result, av1WriteLEB128(uint64(payloadLen))...)
+	result = append(result, obu[headerSize:]...)
 
 	return result
 }
@@ -564,9 +512,10 @@ func (d *AV1Depacketizer) DepacketizeBytes(data []byte) (*EncodedFrame, error) {
 func (d *AV1Depacketizer) Reset() {
 	d.mu.Lock()
 	d.obuBuffer = d.obuBuffer[:0]
-	d.partialOBU = d.partialOBU[:0]
 	d.timestamp = 0
 	d.frameType = FrameTypeUnknown
+	d.lastCompletedTs = 0
+	d.hasCompletedFrame = false
 	d.mu.Unlock()
 }
 
@@ -582,4 +531,86 @@ func init() {
 	RegisterVideoDepacketizer(VideoCodecAV1, func() (RTPDepacketizer, error) {
 		return NewAV1Depacketizer(), nil
 	})
+}
+
+// AV1SaveCapturedPackets writes captured RTP packets to the configured file.
+// File format: [packet_count:uint32] + for each: [len:uint32][data:bytes]
+func AV1SaveCapturedPackets() {
+	if AV1CaptureFile == "" || len(av1CapturedPackets) == 0 {
+		return
+	}
+
+	f, err := os.Create(AV1CaptureFile)
+	if err != nil {
+		log.Printf("AV1 Capture: failed to create file %s: %v", AV1CaptureFile, err)
+		return
+	}
+	defer f.Close()
+
+	// Write packet count
+	countBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(countBuf, uint32(len(av1CapturedPackets)))
+	if _, err := f.Write(countBuf); err != nil {
+		log.Printf("AV1 Capture: failed to write count: %v", err)
+		return
+	}
+
+	// Write each packet
+	lenBuf := make([]byte, 4)
+	for i, pkt := range av1CapturedPackets {
+		binary.BigEndian.PutUint32(lenBuf, uint32(len(pkt)))
+		if _, err := f.Write(lenBuf); err != nil {
+			log.Printf("AV1 Capture: failed to write packet %d length: %v", i, err)
+			return
+		}
+		if _, err := f.Write(pkt); err != nil {
+			log.Printf("AV1 Capture: failed to write packet %d data: %v", i, err)
+			return
+		}
+	}
+
+	log.Printf("AV1 Capture: saved %d packets to %s", len(av1CapturedPackets), AV1CaptureFile)
+}
+
+// AV1LoadCapturedPackets loads RTP packets from a capture file.
+// Returns the raw RTP packet bytes for replay testing.
+func AV1LoadCapturedPackets(filename string) ([][]byte, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(data) < 4 {
+		return nil, nil
+	}
+
+	count := binary.BigEndian.Uint32(data[:4])
+	offset := 4
+	packets := make([][]byte, 0, count)
+
+	for i := uint32(0); i < count && offset+4 <= len(data); i++ {
+		pktLen := binary.BigEndian.Uint32(data[offset : offset+4])
+		offset += 4
+
+		if offset+int(pktLen) > len(data) {
+			break
+		}
+
+		pkt := make([]byte, pktLen)
+		copy(pkt, data[offset:offset+int(pktLen)])
+		packets = append(packets, pkt)
+		offset += int(pktLen)
+	}
+
+	return packets, nil
+}
+
+// AV1ClearCapturedPackets clears any captured packets and resets capture state.
+func AV1ClearCapturedPackets() {
+	av1CapturedPackets = nil
+}
+
+// AV1SetCaptureLimit sets the maximum number of packets to capture.
+func AV1SetCaptureLimit(limit int) {
+	av1CaptureLimit = limit
 }
